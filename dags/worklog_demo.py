@@ -328,7 +328,7 @@ with DAG(
     task_close_worklog = PythonOperator(
         task_id='close_worklog',
         python_callable=close_worklog,
-        trigger_rule='none_failed_min_one_success',  # Run even if monitoring task is still running
+        trigger_rule='none_failed_or_skipped',  # Run even if monitoring task is still running
     )
 
     # Define the task dependencies

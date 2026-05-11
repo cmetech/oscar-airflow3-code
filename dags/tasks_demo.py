@@ -517,13 +517,13 @@ with DAG(
     task_restore = PythonOperator(
         task_id='restore_original_state',
         python_callable=restore_original_state,
-        trigger_rule='none_failed_min_one_success',  # Run even if some tests fail
+        trigger_rule='none_failed_or_skipped',  # Run even if some tests fail
     )
     
     task_close_worklog = PythonOperator(
         task_id='close_worklog',
         python_callable=close_worklog,
-        trigger_rule='none_failed_min_one_success',  # Always close the worklog
+        trigger_rule='none_failed_or_skipped',  # Always close the worklog
     )
     
     # Define the task dependencies

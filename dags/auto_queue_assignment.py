@@ -1,5 +1,4 @@
 from airflow import DAG
-import pendulum
 from datetime import datetime, timedelta
 from airflow.operators.python import PythonOperator
 import requests
