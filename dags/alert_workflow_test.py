@@ -48,7 +48,7 @@ def validate_and_parse_alert(**context) -> Dict[str, Any]:
                 {"key": "run_id", "value": run_id},
                 {"key": "dag_id", "value": context['dag'].dag_id},
                 {"key": "task_instance", "value": str(context['ti'])},
-                {"key": "execution_date", "value": str(context['execution_date'])}
+                {"key": "execution_date", "value": str(context.get('logical_date') or context.get('execution_date'))}
             ]
         )
         worklog_id = worklog.get('id')
@@ -490,7 +490,7 @@ def complete_workflow(**context) -> bool:
         hook.info(f"Final status: Alert {alert_name} (severity: {severity}) processed")
 
         # Add performance metrics
-        execution_time = context.get('execution_date')
+        execution_time = context.get('logical_date') or context.get('execution_date')
         if execution_time:
             hook.debug(f"Workflow execution started: {execution_time}")
 

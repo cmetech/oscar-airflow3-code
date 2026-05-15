@@ -53,9 +53,10 @@ def process_alert(**context):
             # Add dag_run_id to metadata
             metadata.append({"key": "dag_run_id", "value": dag_run.run_id})
 
-            # Add execution_date if available
-            if 'execution_date' in context:
-                metadata.append({"key": "execution_date", "value": str(context['execution_date'])})
+            # Add logical_date if available (execution_date renamed in AF3)
+            logical_date = context.get('logical_date') or context.get('execution_date')
+            if logical_date:
+                metadata.append({"key": "execution_date", "value": str(logical_date)})
         else:
             # Log warning if dag_run is not available
             logger.warning("No dag_run available in context")
