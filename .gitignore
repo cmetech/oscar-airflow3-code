@@ -1,10 +1,47 @@
+# Python
 __pycache__/
-*.pyc
+*.py[cod]
 *.pyo
 *.pyd
-.pytest_cache/
+*.so
+*.egg
 *.egg-info/
-.eggs/
 dist/
 build/
-*.log
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+env/
+.env
+
+# Airflow runtime (generated, not source)
+logs/
+airflow.db
+airflow.cfg
+webserver_config.py
+standalone_admin_password.txt
+.airflow/
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+.DS_*
+Thumbs.db
+
+# Testing / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+*.lcov
+
+# Type checking
+.mypy_cache/
+.pytype/

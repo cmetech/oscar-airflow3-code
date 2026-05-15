@@ -24,7 +24,7 @@ from datetime import datetime, timedelta
 import os
 from airflow import DAG
 from airflow.operators.python import PythonOperator, BranchPythonOperator
-from airflow.operators.dummy import DummyOperator
+from airflow.operators.empty import EmptyOperator
 from airflow.hooks.base import BaseHook
 from airflow.models import Variable
 from airflow.exceptions import AirflowSkipException, AirflowException
@@ -1604,7 +1604,7 @@ notify_failure_task = PythonOperator(
     task_id='notify_failure',
     python_callable=notify_failure,
     on_failure_callback=handle_task_failure,
-    trigger_rule='none_failed_or_skipped',
+    trigger_rule='all_success',
     dag=dag,
 )
 
@@ -1614,7 +1614,7 @@ update_ticket_task = PythonOperator(
     task_id='update_incident_ticket',
     python_callable=update_incident_ticket,
     on_failure_callback=handle_task_failure,
-    trigger_rule='none_failed_or_skipped',
+    trigger_rule='all_success',
     retries=1,  # Try once more if ticket update fails
     retry_delay=timedelta(seconds=30),
     dag=dag,
@@ -1625,14 +1625,14 @@ notify_status_task = PythonOperator(
     task_id='notify_recovery_status',
     python_callable=notify_recovery_status,
     on_failure_callback=handle_task_failure,
-    trigger_rule='none_failed_or_skipped',
+    trigger_rule='all_success',
     dag=dag,
 )
 
-# End marker
-end_task = DummyOperator(
+# End marker — two upstreams, one always skipped due to branching
+end_task = EmptyOperator(
     task_id='end',
-    trigger_rule='none_failed_or_skipped',
+    trigger_rule='none_failed_min_one_success',
     dag=dag,
 )
 
