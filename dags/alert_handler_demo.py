@@ -4,7 +4,7 @@ import json
 import uuid
 from airflow import DAG
 import pendulum
-from airflow.operators.python import PythonOperator
+from airflow.providers.standard.operators.python import PythonOperator
 
 # Import our custom hook
 from hooks.worklog_hook import WorkLogHook, SeverityLevel, WorkLogType  # type: ignore

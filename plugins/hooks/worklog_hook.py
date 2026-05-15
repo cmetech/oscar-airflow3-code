@@ -1,4 +1,4 @@
-from airflow.hooks.base import BaseHook
+from airflow.sdk.bases.hook import BaseHook
 import os
 import logging
 from typing import Dict, Any, List, Optional, Union, cast, TypedDict, Literal

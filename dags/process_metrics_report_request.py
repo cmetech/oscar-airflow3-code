@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Dict, Any, List, Optional, Tuple, Union
 from airflow import DAG
 import pendulum
-from airflow.operators.python import PythonOperator
+from airflow.providers.standard.operators.python import PythonOperator
 import requests
 import pandas as pd
 from urllib.parse import quote

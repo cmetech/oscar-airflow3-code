@@ -8,9 +8,9 @@ from datetime import datetime, timedelta, timezone
 
 from airflow import DAG
 from airflow.decorators import task
-from airflow.hooks.base import BaseHook
+from airflow.sdk.bases.hook import BaseHook
 from airflow.utils.trigger_rule import TriggerRule
-from airflow.operators.empty import EmptyOperator
+from airflow.providers.standard.operators.empty import EmptyOperator
 
 from hooks.worklog_hook import WorkLogHook, WorkLogType  # type: ignore
 from helpers import oscar_housekeeping_config as housekeeping_config

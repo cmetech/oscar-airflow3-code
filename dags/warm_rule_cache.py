@@ -45,7 +45,7 @@ from datetime import timedelta
 from typing import Dict, Any, List
 from airflow import DAG
 import pendulum
-from airflow.operators.python import PythonOperator
+from airflow.providers.standard.operators.python import PythonOperator
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from hooks.worklog_hook import WorkLogHook  # type: ignore

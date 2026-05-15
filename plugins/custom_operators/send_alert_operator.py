@@ -1,7 +1,7 @@
 import logging
 from typing import Optional, Dict, Any
 
-from airflow.models.baseoperator import BaseOperator
+from airflow.sdk.bases.operator import BaseOperator
 
 
 from hooks.alert_hook import AlertHook

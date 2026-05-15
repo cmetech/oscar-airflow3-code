@@ -19,7 +19,7 @@ import uuid
 from airflow import DAG
 import pendulum
 from airflow.decorators import task
-from airflow.hooks.base import BaseHook
+from airflow.sdk.bases.hook import BaseHook
 from airflow.utils.trigger_rule import TriggerRule
 from airflow.utils.task_group import TaskGroup
 

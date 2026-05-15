@@ -31,7 +31,7 @@ import uuid
 import requests
 from airflow import DAG
 import pendulum
-from airflow.operators.python import PythonOperator
+from airflow.providers.standard.operators.python import PythonOperator
 
 from hooks.worklog_hook import WorkLogHook, WorkLogType  # type: ignore
 from hooks.oscar_hook import OscarHook  # type: ignore

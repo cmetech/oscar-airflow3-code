@@ -70,7 +70,7 @@ from datetime import datetime
 import httpx
 from airflow import DAG
 from airflow.exceptions import AirflowSkipException
-from airflow.operators.python import PythonOperator
+from airflow.providers.standard.operators.python import PythonOperator
 from airflow.utils.trigger_rule import TriggerRule
 
 log = logging.getLogger(__name__)

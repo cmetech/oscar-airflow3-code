@@ -1,12 +1,12 @@
 from datetime import datetime, timedelta
 from airflow import DAG
-from airflow.operators.python import PythonOperator, BranchPythonOperator
-from airflow.operators.empty import EmptyOperator
+from airflow.providers.standard.operators.python import PythonOperator, BranchPythonOperator
+from airflow.providers.standard.operators.empty import EmptyOperator
 from airflow.utils.task_group import TaskGroup
 from airflow.utils.trigger_rule import TriggerRule
 from hooks.worklog_hook import WorkLogHook, WorkLogType
 from hooks.access_management_db_hook import AccessManagementSQLHook
-from airflow.hooks.base import BaseHook
+from airflow.sdk.bases.hook import BaseHook
 from typing import Dict, Any
 import os
 import re

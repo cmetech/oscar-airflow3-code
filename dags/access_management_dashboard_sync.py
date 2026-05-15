@@ -16,8 +16,8 @@ from datetime import datetime, timezone, timedelta
 from typing import Dict, Any, List, Optional
 from airflow import DAG
 import pendulum
-from airflow.operators.python import PythonOperator
-from airflow.hooks.base import BaseHook
+from airflow.providers.standard.operators.python import PythonOperator
+from airflow.sdk.bases.hook import BaseHook
 from sqlalchemy.orm import Session
 
 # Import existing hooks

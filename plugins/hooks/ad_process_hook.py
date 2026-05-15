@@ -3,7 +3,7 @@ import logging
 import time
 from typing import Dict, Any
 from fabric import Connection
-from airflow.hooks.base import BaseHook
+from airflow.sdk.bases.hook import BaseHook
 from invoke import Responder
 
 logger = logging.getLogger(__name__)

@@ -23,9 +23,9 @@ Alert Structure Expected:
 from datetime import datetime, timedelta
 import os
 from airflow import DAG
-from airflow.operators.python import PythonOperator, BranchPythonOperator
-from airflow.operators.empty import EmptyOperator
-from airflow.hooks.base import BaseHook
+from airflow.providers.standard.operators.python import PythonOperator, BranchPythonOperator
+from airflow.providers.standard.operators.empty import EmptyOperator
+from airflow.sdk.bases.hook import BaseHook
 from airflow.models import Variable
 from airflow.exceptions import AirflowSkipException, AirflowException
 import logging

@@ -3,7 +3,7 @@ from hooks.access_management_db_hook import AccessManagementSQLHook
 from typing import Dict, Any
 import os
 import logging
-from airflow.hooks.base import BaseHook
+from airflow.sdk.bases.hook import BaseHook
 from hooks.ad_process_hook import AD_ProcessHook
 from datetime import datetime, timezone, timedelta
 from jinja2 import Template

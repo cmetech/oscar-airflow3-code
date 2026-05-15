@@ -1,7 +1,7 @@
 from datetime import timedelta
 from airflow import DAG
 import pendulum
-from airflow.operators.python import PythonOperator
+from airflow.providers.standard.operators.python import PythonOperator
 import logging
 
 from hooks.rule_hook import RuleHook  # type: ignore

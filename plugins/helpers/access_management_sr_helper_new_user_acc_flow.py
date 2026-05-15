@@ -4,7 +4,7 @@ from typing import Dict, Any
 import logging
 import os
 import json
-from airflow.hooks.base import BaseHook
+from airflow.sdk.bases.hook import BaseHook
 from hooks.ad_process_hook import AD_ProcessHook
 import httpx
 from jinja2 import Template

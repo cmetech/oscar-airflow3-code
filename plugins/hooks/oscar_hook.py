@@ -1,6 +1,6 @@
 import os
 from typing import Optional
-from airflow.hooks.base import BaseHook
+from airflow.sdk.bases.hook import BaseHook
 
 
 class OscarHook(BaseHook):

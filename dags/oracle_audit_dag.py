@@ -12,7 +12,7 @@ from prometheus_client import CollectorRegistry, Gauge, push_to_gateway
 import oracledb
 import MySQLdb
 from typing import Dict, Any, List
-from airflow.hooks.base import BaseHook
+from airflow.sdk.bases.hook import BaseHook
 import uuid
 import requests  # import requests for HTTP calls
 import httpx  # Using httpx instead of requests

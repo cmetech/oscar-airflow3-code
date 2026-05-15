@@ -2,7 +2,7 @@ import logging
 from typing import Dict, Any
 from hooks.access_management_db_hook import AccessManagementSQLHook
 from hooks.ad_process_hook import AD_ProcessHook
-from airflow.hooks.base import BaseHook
+from airflow.sdk.bases.hook import BaseHook
 from hooks.worklog_hook import WorkLogHook
 import uuid
 import os

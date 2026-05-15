@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Dict, Any, Optional, List
 from airflow import DAG
 import pendulum
-from airflow.operators.python import PythonOperator
+from airflow.providers.standard.operators.python import PythonOperator
 from helpers.schema.email_processing import AttachmentStorageType  # type: ignore
 from helpers.email_helper import retrieve_stored_attachment  # type: ignore
 from hooks.worklog_hook import WorkLogHook, WorkLogType  # type: ignore

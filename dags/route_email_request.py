@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta, timezone
 from airflow import DAG
 import pendulum
-from airflow.operators.python import PythonOperator
+from airflow.providers.standard.operators.python import PythonOperator
 import logging
 import uuid
 import json

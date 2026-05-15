@@ -13,7 +13,7 @@ import httpx
 from typing import Dict, Any, List, Optional, Tuple
 from datetime import datetime, timezone
 
-from airflow.hooks.base import BaseHook
+from airflow.sdk.bases.hook import BaseHook
 from elasticsearch8 import Elasticsearch
 
 logger = logging.getLogger(__name__)

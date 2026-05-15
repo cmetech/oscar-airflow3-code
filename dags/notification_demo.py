@@ -4,7 +4,7 @@ import json
 import logging
 from airflow import DAG
 import pendulum
-from airflow.operators.python import PythonOperator
+from airflow.providers.standard.operators.python import PythonOperator
 from hooks.notify_hook import NotifyHook  # type: ignore
 from hooks.worklog_hook import WorkLogHook, WorkLogType, SeverityLevel  # type: ignore
 

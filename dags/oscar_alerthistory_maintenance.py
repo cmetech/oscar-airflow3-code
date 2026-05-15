@@ -1,7 +1,7 @@
 import os
 from airflow import DAG
 from airflow.decorators import task
-from airflow.hooks.base import BaseHook
+from airflow.sdk.bases.hook import BaseHook
 from datetime import datetime, timedelta, timezone
 import mysql.connector
 

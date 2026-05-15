@@ -12,7 +12,7 @@ import json
 import httpx
 from typing import Dict, Any, List, Optional, Union
 from datetime import datetime, timezone
-from airflow.hooks.base import BaseHook
+from airflow.sdk.bases.hook import BaseHook
 from prometheus_client import CollectorRegistry, Gauge, Counter, push_to_gateway
 
 logger = logging.getLogger(__name__)

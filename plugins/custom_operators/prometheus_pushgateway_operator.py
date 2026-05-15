@@ -1,5 +1,5 @@
-from airflow.models import BaseOperator
-from airflow.hooks.base import BaseHook
+from airflow.sdk.bases.operator import BaseOperator
+from airflow.sdk.bases.hook import BaseHook
 from helpers.prometheus_helper import PrometheusMetricsSender
 
 class PushMetricsToPrometheusOperator(BaseOperator):
