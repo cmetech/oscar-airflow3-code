@@ -262,9 +262,7 @@ with DAG(
             task_id='ad_connect_user_password_reset',
             python_callable=ad_connect_user_password_reset,
             retries=12,
-            retry_delay=timedelta(minutes=2),
-            retry_exponential_backoff=True,
-            max_retry_delay=timedelta(minutes=20)
+            retry_delay=timedelta(seconds=0),
         )
 
         # Branch based on AD output
@@ -389,9 +387,7 @@ with DAG(
             task_id='ad_connect_new_user_account',
             python_callable=ad_process_new_user_account,
             retries=12,
-            retry_delay=timedelta(minutes=2),
-            retry_exponential_backoff=True,
-            max_retry_delay=timedelta(minutes=20)
+            retry_delay=timedelta(seconds=0),
         )
 
         # Branch based on AD output
@@ -524,9 +520,7 @@ with DAG(
             task_id='ad_process_new_service_account',
             python_callable=ad_process_new_service_account,
             retries=12,
-            retry_delay=timedelta(minutes=2),
-            retry_exponential_backoff=True,
-            max_retry_delay=timedelta(minutes=20)
+            retry_delay=timedelta(seconds=0),
         )
 
         def branch_based_on_ad_output_new_service_account(**context):
@@ -673,9 +667,7 @@ with DAG(
             task_id='ad_connect_user_account_modification',
             python_callable=ad_connect_user_account_modification,
             retries=12,
-            retry_delay=timedelta(minutes=2),
-            retry_exponential_backoff=True,
-            max_retry_delay=timedelta(minutes=20)
+            retry_delay=timedelta(seconds=0),
         )
 
         def branch_based_on_ad_output_user_account_modify(**context):

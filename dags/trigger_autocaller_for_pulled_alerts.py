@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 default_args = {
     "owner": "airflow",
     "depends_on_past": False,
-    "start_date": pendulum.today('UTC').add(days=-1),
+    "start_date": pendulum.datetime(2024, 1, 1, tz='UTC'),
     "retries": 1,
 }
 

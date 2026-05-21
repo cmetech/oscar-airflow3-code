@@ -1167,7 +1167,7 @@ with DAG(
     default_args=default_args,
     description="Process maintenance mode requests from email",
     schedule=None,  # Triggered by route_email_request
-    start_date=pendulum.today('UTC').add(days=-1),
+    start_date=pendulum.datetime(2024, 1, 1, tz='UTC'),
     tags=["email", "maintenance", "processing"],
     catchup=False
 ) as dag:

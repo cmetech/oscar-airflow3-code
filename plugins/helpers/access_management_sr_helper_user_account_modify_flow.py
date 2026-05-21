@@ -11,6 +11,7 @@ from datetime import datetime
 from hooks.mapping_hook import MappingHook
 from hooks.notify_hook import NotifyHook
 import re
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -282,6 +283,12 @@ def ad_connect_user_account_modification(**context) -> Dict[str, Any]:
         ti.xcom_push(key='activity_data', value=activity_data)
     else:
         hook.error(f"User account modification process failed: {result.get('error', 'Unknown error')}")
+        if result['data'] is None:
+            attempt = context['ti'].try_number
+            sleep_secs = min(2 * (2 ** (attempt - 1)), 15) * 60
+            hook.warning(f"AD connection failed, backing off {sleep_secs}s (attempt {attempt}): {result.get('error')}")
+            time.sleep(sleep_secs)
+            raise RuntimeError(f"AD operation failed: {result.get('error')}")
         # Add the AD process result to activity_data even in error case
         activity_data['data']['ad_process_result'] = result['data']
         activity_data['data']['ad_output_user_account_modify'] = result['data']['AD_OUTPUT']

@@ -261,7 +261,7 @@ with DAG(
     default_args=default_args,
     description='Demo DAG for handling alerts from the notification system',
     schedule=None,  # This DAG will only be triggered externally
-    start_date=pendulum.today('UTC').add(days=-1),
+    start_date=pendulum.datetime(2024, 1, 1, tz='UTC'),
     tags=['demo', 'alert', 'worklog'],
     catchup=False,  # Don't run for historical dates
 ) as dag:

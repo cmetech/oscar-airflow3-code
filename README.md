@@ -1,6 +1,6 @@
 # oscar-airflow3-code
 
-OSCAR Airflow 3 DAG and plugin repository. Targets **Apache Airflow 3.1.8+**.
+OSCAR Airflow 3 DAG and plugin repository. Targets **Apache Airflow 3.2.1+**.
 
 This repo is the AF3 branch of the OSCAR workflow engine code. It is synced into `oscar/oscar-workflow/airflow/` at build time via:
 
@@ -15,17 +15,16 @@ This repo is the AF3 branch of the OSCAR workflow engine code. It is synced into
 
 | Item | Value |
 |---|---|
-| Airflow version | 3.1.8+ |
-| Alembic schema head | `509b94a1042d` |
+| Airflow version | 3.2.1+ |
 | Python | 3.12 |
 | Container | `airflow-apiserver` (not `airflow-webserver`) |
 | Auth token URL | `http://airflow-apiserver:6080/airflow/auth/token` |
 
 ---
 
-## Import Conventions (AF3.1.8)
+## Import Conventions (AF3.2.1)
 
-AF3.1.8 moved core classes to `airflow.sdk` and standard operators to `airflow.providers.standard`. Always use these paths:
+AF3 moved core classes to `airflow.sdk` and standard operators to `airflow.providers.standard`. Always use these paths:
 
 ```python
 # Operators — airflow.providers.standard.*
@@ -51,7 +50,7 @@ from airflow.providers.mysql.hooks.mysql import MySqlHook
 from airflow.providers.oracle.hooks.oracle import OracleHook
 ```
 
-### Old paths that generate DeprecationWarning in AF3.1.8
+### Old paths that generate DeprecationWarning in AF3.2.1
 
 | Old (do not use) | New |
 |---|---|
@@ -82,13 +81,16 @@ Context variables that are still valid: `ti`, `dag`, `dag_run`, `ds`, `run_id`, 
 
 ## Removed in AF3 (never use in this repo)
 
-| Removed | AF2 equivalent |
+| Removed | Replacement |
 |---|---|
 | `provide_context=True` | Remove entirely — context always passed |
 | `@apply_defaults` | Remove decorator |
 | `schedule_interval=` | Use `schedule=` |
 | `from airflow.utils.dates import days_ago` | Use `datetime(...)` directly |
 | `from airflow.operators.dummy import DummyOperator` | Use `EmptyOperator` |
+| `retry_exponential_backoff=True` (task param) | Implement backoff inside the Python callable with `time.sleep` |
+| `max_retry_delay=` (task param) | Controlled inside the callable |
+| `start_date=pendulum.today('UTC').add(days=-1)` | Use `start_date=pendulum.datetime(2024, 1, 1, tz='UTC')` — dynamic `today()` causes AF3 to re-serialize the DAG daily |
 
 ---
 
@@ -107,7 +109,7 @@ statsd/         # StatsD metrics mapping config
 
 ## Compatibility Validation
 
-Run from repo root — all must return 0 results before pushing:
+Run from repo root before pushing — all must return 0 results:
 
 ```bash
 # Removed APIs

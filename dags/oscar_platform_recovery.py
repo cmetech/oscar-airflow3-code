@@ -1614,7 +1614,7 @@ update_ticket_task = PythonOperator(
     task_id='update_incident_ticket',
     python_callable=update_incident_ticket,
     on_failure_callback=handle_task_failure,
-    trigger_rule='all_success',
+    trigger_rule='none_failed_min_one_success',
     retries=1,  # Try once more if ticket update fails
     retry_delay=timedelta(seconds=30),
     dag=dag,
@@ -1625,7 +1625,7 @@ notify_status_task = PythonOperator(
     task_id='notify_recovery_status',
     python_callable=notify_recovery_status,
     on_failure_callback=handle_task_failure,
-    trigger_rule='all_success',
+    trigger_rule='none_failed_min_one_success',
     dag=dag,
 )
 

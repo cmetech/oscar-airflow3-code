@@ -25,7 +25,7 @@ dag = DAG(
     default_args=default_args,
     description='A demo DAG that exercises the NotifyHook and logs to WorkLog',
     schedule=None,
-    start_date=pendulum.today('UTC').add(days=-1),
+    start_date=pendulum.datetime(2024, 1, 1, tz='UTC'),
     tags=['demo', 'notification', 'worklog'],
 )
 

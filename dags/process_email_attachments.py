@@ -207,7 +207,7 @@ with DAG(
     default_args=default_args,
     description="Process and decode email attachments",
     schedule=None,  # Only triggered manually or via API
-    start_date=pendulum.today('UTC').add(days=-1),
+    start_date=pendulum.datetime(2024, 1, 1, tz='UTC'),
     tags=["email", "attachments", "processing"],
 ) as dag:
 

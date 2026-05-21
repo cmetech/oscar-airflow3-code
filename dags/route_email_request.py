@@ -161,7 +161,7 @@ with DAG(
     default_args=default_args,
     description="Process and route email requests based on rule evaluation",
     schedule=None,  # Only triggered manually or via API
-    start_date=pendulum.today('UTC').add(days=-1),
+    start_date=pendulum.datetime(2024, 1, 1, tz='UTC'),
     tags=["email", "request", "routing"],
 ) as dag:
 

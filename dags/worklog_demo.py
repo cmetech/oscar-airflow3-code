@@ -300,7 +300,7 @@ with DAG(
     default_args=default_args,
     description='Enhanced Test DAG for WorkLog Hook with continuous monitoring',
     schedule=None,
-    start_date=pendulum.today('UTC').add(days=-1),
+    start_date=pendulum.datetime(2024, 1, 1, tz='UTC'),
     tags=['test', 'worklog', 'monitoring'],
 ) as dag:
 
@@ -328,7 +328,7 @@ with DAG(
     task_close_worklog = PythonOperator(
         task_id='close_worklog',
         python_callable=close_worklog,
-        trigger_rule='all_success',  # Run even if monitoring task is still running
+        trigger_rule='none_failed_min_one_success',  # Run even if monitoring task is still running
     )
 
     # Define the task dependencies

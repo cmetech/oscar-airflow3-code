@@ -39,7 +39,7 @@ task_id = f"WORKLOG-TEST-{uuid.uuid4().hex[:8]}"
     default_args=default_args,
     description='Oracle Audit Data Processing DAG',
     schedule="*/7 * * * *",
-    start_date=pendulum.today('UTC').add(days=-1),
+    start_date=pendulum.datetime(2024, 1, 1, tz='UTC'),
     catchup=False,
     max_active_runs=1,
     tags=['oracle', 'audit'],

@@ -2223,7 +2223,7 @@ with DAG(
     default_args=default_args,
     description="Process email alerts: log details, evaluate for alerting, and send alerts if rules pass",
     schedule=None,  # This DAG is triggered via an API call or upstream process.
-    start_date=pendulum.today('UTC').add(days=-1),
+    start_date=pendulum.datetime(2024, 1, 1, tz='UTC'),
     tags=["email", "alerts", "processing"],
 ) as dag:
 

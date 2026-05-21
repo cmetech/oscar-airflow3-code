@@ -474,7 +474,7 @@ with DAG(
     default_args=default_args,
     description='Demonstration of Tasks Hook with retrieval, enable/disable, and pattern search operations',
     schedule=None,
-    start_date=pendulum.today('UTC').add(days=-1),
+    start_date=pendulum.datetime(2024, 1, 1, tz='UTC'),
     tags=['demo', 'tasks', 'worklog', 'pattern-search'],
 ) as dag:
     
@@ -517,13 +517,13 @@ with DAG(
     task_restore = PythonOperator(
         task_id='restore_original_state',
         python_callable=restore_original_state,
-        trigger_rule='all_success',  # Run even if some tests fail
+        trigger_rule='none_failed_min_one_success',  # Run even if some tests fail
     )
     
     task_close_worklog = PythonOperator(
         task_id='close_worklog',
         python_callable=close_worklog,
-        trigger_rule='all_success',  # Always close the worklog
+        trigger_rule='none_failed_min_one_success',  # Always close the worklog
     )
     
     # Define the task dependencies

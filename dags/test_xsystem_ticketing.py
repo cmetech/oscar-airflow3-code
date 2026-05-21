@@ -363,7 +363,7 @@ with DAG(
         "Uses system=remedy — routes to XSystemHandler when TICKETING_REMEDY_OVERRIDE_XSYS=true."
     ),
     schedule=None,
-    start_date=pendulum.today('UTC').add(days=-1),
+    start_date=pendulum.datetime(2024, 1, 1, tz='UTC'),
     catchup=False,
     tags=["test", "xsystem", "ticketing", "remedy"],
 ) as dag:

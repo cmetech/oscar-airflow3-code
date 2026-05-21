@@ -287,7 +287,7 @@ with DAG(
     default_args=default_args,
     description="Process auto queue assignment mapping email attachment and tries to update and create oscar rules otherwise uploaded directly to Oscar Rule through Oscar Supported Excel format of By Oscar GUI",
     schedule=None,  # This DAG is triggered via an API call or upstream process.
-    start_date=pendulum.today('UTC').add(days=-1),
+    start_date=pendulum.datetime(2024, 1, 1, tz='UTC'),
     tags=["autoqueue", "assignment", "mapping-excel-upload", "processing"],
 ) as dag:
 

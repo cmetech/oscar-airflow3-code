@@ -768,7 +768,7 @@ with DAG(
     default_args=default_args,
     description='Magenta Order Fallout - Ingest data from Oracle and SQL Server databases to Elasticsearch',
     schedule=f'*/{INGEST_INTERVAL_MINUTES} * * * *',  # Run every N minutes
-    start_date=pendulum.today('UTC').add(days=-1),
+    start_date=pendulum.datetime(2024, 1, 1, tz='UTC'),
     catchup=False,
     tags=['magenta', 'elasticsearch', 'ingestion', 'oracle', 'sqlserver'],
 ) as dag:

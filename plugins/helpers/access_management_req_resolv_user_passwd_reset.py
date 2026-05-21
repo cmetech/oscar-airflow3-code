@@ -10,6 +10,7 @@ from jinja2 import Template
 import httpx
 from hooks.notify_hook import NotifyHook
 from hooks.mapping_hook import MappingHook
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -437,6 +438,12 @@ def ad_process_user_password_reset_rs(**context) -> Dict[str, Any]:
         ti.xcom_push(key='activity_data_request_resolve', value=activity_data)
     else:
         hook.error(f"Password reset process failed: {result.get('error', 'Unknown error')}")
+        if result['data'] is None:
+            attempt = context['ti'].try_number
+            sleep_secs = min(2 * (2 ** (attempt - 1)), 15) * 60
+            hook.warning(f"AD connection failed, backing off {sleep_secs}s (attempt {attempt}): {result.get('error')}")
+            time.sleep(sleep_secs)
+            raise RuntimeError(f"AD operation failed: {result.get('error')}")
         activity_data['data']['ad_process_result'] = result['data']
 
         # Process service account list

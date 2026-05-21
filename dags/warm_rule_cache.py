@@ -303,7 +303,7 @@ with DAG(
     default_args=default_args,
     description="Warm rule cache across all uvicorn workers after maintenance enable",
     schedule=None,  # Only triggered by other DAGs or manually
-    start_date=pendulum.today('UTC').add(days=-1),
+    start_date=pendulum.datetime(2024, 1, 1, tz='UTC'),
     tags=["cache", "maintenance", "internal"],
     catchup=False,
     max_active_runs=3,  # Allow multiple concurrent runs

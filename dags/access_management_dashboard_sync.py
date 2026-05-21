@@ -415,9 +415,9 @@ default_args = {
 with DAG(
     dag_id="access_management_dashboard_sync",
     default_args=default_args,
-    description=f"Sync access management data to Elasticsearch for Kibana dashboard (upsert based on u_identifier, {SYNC_INTERVAL_HOURS} hours)",
-    schedule=DAG_SCHEDULE_INTERVAL,  # Configurable schedule interval
-    start_date=pendulum.today('UTC').add(days=-1),
+    description="Sync access management data to Elasticsearch for Kibana dashboard (upsert based on u_identifier)",
+    schedule=DAG_SCHEDULE_INTERVAL,
+    start_date=pendulum.datetime(2024, 1, 1, tz="UTC"),
     tags=["access", "management", "dashboard", "sync", "elasticsearch"],
     catchup=False,
 ) as dag:

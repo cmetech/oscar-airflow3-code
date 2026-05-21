@@ -57,7 +57,7 @@ dag = DAG(
     default_args=default_args,
     description='OSCAR System Health Monitoring and Alerting',
     schedule=timedelta(minutes=5),  # Run every 5 minutes
-    start_date=pendulum.today('UTC').add(days=-1),
+    start_date=pendulum.datetime(2024, 1, 1, tz='UTC'),
     catchup=False,
     tags=['health', 'monitoring', 'system', 'oscar'],
     max_active_runs=2,  # Limit concurrent runs
@@ -449,7 +449,7 @@ daily_report_dag = DAG(
     default_args=default_args,
     description='OSCAR Daily System Health Report',
     schedule='0 6 * * *',  # Daily at 6 AM UTC
-    start_date=pendulum.today('UTC').add(days=-1),
+    start_date=pendulum.datetime(2024, 1, 1, tz='UTC'),
     catchup=False,
     tags=['health', 'reporting', 'daily', 'oscar'],
     max_active_runs=1,
@@ -492,7 +492,7 @@ weekly_analysis_dag = DAG(
     default_args=default_args,
     description='OSCAR Weekly System Health Analysis',
     schedule='0 8 * * 0',  # Weekly on Sundays at 8 AM UTC
-    start_date=pendulum.today('UTC').add(days=-1),
+    start_date=pendulum.datetime(2024, 1, 1, tz='UTC'),
     catchup=False,
     tags=['health', 'analysis', 'weekly', 'oscar'],
     max_active_runs=1
