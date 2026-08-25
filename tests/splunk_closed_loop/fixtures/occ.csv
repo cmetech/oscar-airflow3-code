@@ -1,0 +1,3 @@
+"_time","occ_server","Ro_voice_success_rate","Ro_voice_success_total","Ro_voice_request_total","Ro_voice_request_total_error","Ro_voice_request_total_ci_error","Ro_Initial_success","Ro_Update_success","Ro_Termination_success","Ro_Initial_request","Ro_Update_request","Ro_Termination_request"
+"2023-05-15 02:00:00.000 CDT",plaocc001hp,"0.9999575276866393",94175,94179,"-53624.52706549436","-0.7915235248511894",24766,44729,24680,24766,44730,24683
+"2023-05-15 02:00:00.000 CDT",plaocc002hp,1,93966,93966,"-51971.66259595","-0.7731647049635",24856,44333,24777,24856,44333,24777
