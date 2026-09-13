@@ -1,7 +1,6 @@
 import os
 from airflow import DAG
-import pendulum
-from airflow.decorators import dag, task
+from airflow.sdk import dag, task, BaseHook
 from airflow.providers.oracle.hooks.oracle import OracleHook
 from airflow.providers.mysql.hooks.mysql import MySqlHook
 from airflow.models import Connection, TaskInstance
@@ -12,7 +11,6 @@ from prometheus_client import CollectorRegistry, Gauge, push_to_gateway
 import oracledb
 import MySQLdb
 from typing import Dict, Any, List
-from airflow.sdk.bases.hook import BaseHook
 import uuid
 import requests  # import requests for HTTP calls
 import httpx  # Using httpx instead of requests
@@ -36,10 +34,11 @@ task_id = f"WORKLOG-TEST-{uuid.uuid4().hex[:8]}"
 
 
 @dag(
+    dag_id='oracle_audit_processing_prod',
     default_args=default_args,
     description='Oracle Audit Data Processing DAG',
     schedule="*/7 * * * *",
-    start_date=pendulum.datetime(2024, 1, 1, tz='UTC'),
+    start_date=datetime(2026, 1, 1, tzinfo=timezone.utc),
     catchup=False,
     max_active_runs=1,
     tags=['oracle', 'audit'],
@@ -180,7 +179,7 @@ def oracle_audit_processing():
         object_name, action_name, and instance.
         """
         # Get worklog ID from XCom
-        worklog_id = context['ti'].xcom_pull(key='worklog_id')
+        worklog_id = context['ti'].xcom_pull(task_ids='fetch_oracle_data', key='worklog_id')
 
         # Create hook and set the worklog ID
         hook = WorkLogHook()
@@ -239,7 +238,7 @@ def oracle_audit_processing():
     @task
     def insert_to_mysql(**context) -> None:
         # Get worklog ID from XCom
-        worklog_id = context['ti'].xcom_pull(key='worklog_id')
+        worklog_id = context['ti'].xcom_pull(task_ids='fetch_oracle_data', key='worklog_id')
 
         # Create hook and set the worklog ID
         hook = WorkLogHook()
@@ -335,7 +334,7 @@ def oracle_audit_processing():
         and sends alerts via a POST request using httpx.
         """
         # Get worklog ID from XCom
-        worklog_id = context['ti'].xcom_pull(key='worklog_id')
+        worklog_id = context['ti'].xcom_pull(task_ids='fetch_oracle_data', key='worklog_id')
 
         # Create hook and set the worklog ID
         hook = WorkLogHook()
@@ -347,7 +346,7 @@ def oracle_audit_processing():
             if not isinstance(s, str):
                 return str(s)
             # Escape backslashes and quotes
-            return s.replace('\\', '\\\\').replace('"', '\\"')
+            return s.replace('\\\\', '\\\\\\\\').replace('"', '\\\\"')
 
         # Set up Jinja2 environment with custom filters
         env = Environment(
@@ -488,7 +487,7 @@ def oracle_audit_processing():
     def close_worklog(**context) -> None:
         """Close the worklog and add final entries"""
         # Get worklog ID from XCom
-        worklog_id = context['ti'].xcom_pull(key='worklog_id')
+        worklog_id = context['ti'].xcom_pull(task_ids='fetch_oracle_data', key='worklog_id')
 
         # Create hook and set the worklog ID
         hook = WorkLogHook()
