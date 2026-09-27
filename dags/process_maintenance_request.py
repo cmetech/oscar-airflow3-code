@@ -538,7 +538,8 @@ def call_maintenance_api(
     action: str,
     cr: str,
     params: Dict[str, Any],
-    worklog_hook: WorkLogHook
+    worklog_hook: WorkLogHook,
+    requested_by: Optional[str] = None
 ) -> Tuple[bool, str, Dict[str, Any]]:
     """
     Call the maintenance mode API.
@@ -548,6 +549,8 @@ def call_maintenance_api(
         cr: Change request identifier
         params: Additional parameters for the API call
         worklog_hook: WorkLog hook for logging
+        requested_by: Email sender, recorded as the requester in the
+            maintenance ledger (the DAG itself authenticates as "airflow")
 
     Returns:
         Tuple of (success, message, response_data)
@@ -559,6 +562,16 @@ def call_maintenance_api(
 
     # Build API URL - use internal path without /ext/mw prefix
     base_url = f"{middleware_host}/api/v1/notifiers/maintenance"
+
+    # X-Oscar-Source/-Requested-By attribute the window in the maintenance
+    # ledger; middleware honours Requested-By only from internal services.
+    api_headers = {
+        'Content-Type': 'application/json',
+        'X-Internal-Service': 'airflow',
+        'X-Oscar-Source': 'email',
+    }
+    if requested_by:
+        api_headers['X-Oscar-Requested-By'] = requested_by
 
     try:
         if action == 'enable':
@@ -584,10 +597,7 @@ def call_maintenance_api(
             response = requests.post(
                 url,
                 json=data,
-                headers={
-                    'Content-Type': 'application/json',
-                    'X-Internal-Service': 'airflow'
-                },
+                headers=api_headers,
                 verify=False
             )
 
@@ -601,10 +611,7 @@ def call_maintenance_api(
             response = requests.post(
                 url,
                 json=data,
-                headers={
-                    'Content-Type': 'application/json',
-                    'X-Internal-Service': 'airflow'
-                },
+                headers=api_headers,
                 verify=False
             )
 
@@ -957,7 +964,7 @@ Date: {date}
                 body_params['duration'] = MAX_DURATION_HOURS
 
         # Call maintenance API
-        success, message, api_response = call_maintenance_api(action, cr, body_params, worklog_hook)
+        success, message, api_response = call_maintenance_api(action, cr, body_params, worklog_hook, requested_by=from_addr)
 
         if success:
             # Send success notification
