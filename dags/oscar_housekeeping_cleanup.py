@@ -1360,8 +1360,20 @@ def clean_alert_history_records(**context):
                 cursor.fetchall()  # Must consume OPTIMIZE result set
                 cursor.execute("OPTIMIZE TABLE AM_AlertHistoryAnnotation")
                 cursor.fetchall()  # Must consume OPTIMIZE result set
+                _history_tables = ['AM_AlertHistory', 'AM_AlertHistoryLabel', 'AM_AlertHistoryAnnotation']
+                # Long label values live in AM_AlertHistoryLabelAnchor. Its orphans are deleted by the
+                # alertmanager's own nightly sweep (oscar-scheduler label_anchor_prune, 00:45 ->
+                # tm.alerts.prune_label_anchors) -- the single owner of that cleanup. Housekeeping only
+                # reclaims the table's disk space, and only on installs that have the table.
+                cursor.execute(
+                    "SELECT COUNT(*) FROM information_schema.tables "
+                    "WHERE table_schema = DATABASE() AND table_name = 'AM_AlertHistoryLabelAnchor'")
+                if cursor.fetchone()[0]:
+                    cursor.execute("OPTIMIZE TABLE AM_AlertHistoryLabelAnchor")
+                    cursor.fetchall()  # Must consume OPTIMIZE result set
+                    _history_tables.append('AM_AlertHistoryLabelAnchor')
                 # Refresh information_schema stats so table sizes are accurate
-                for _tbl in ['AM_AlertHistory','AM_AlertHistoryLabel','AM_AlertHistoryAnnotation']:
+                for _tbl in _history_tables:
                     cursor.execute(f"ANALYZE TABLE {_tbl}")
                     cursor.fetchall()
                 db.commit()
