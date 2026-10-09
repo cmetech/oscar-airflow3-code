@@ -367,7 +367,7 @@ TASK_HISTORY_DAYS_TO_KEEP = 7
 TASK_HISTORY_BATCH_SIZE = 2000          # ~230K rows/day × 7 days = 1.6M rows max; 2000×400 = 800K capacity per run
 TASK_HISTORY_MAX_ITERATIONS = 600      # 2000×600=1.2M capacity; clears 242K backlog + daily 230K growth
 TASK_HISTORY_TABLE_SWAP_MODE = False  # Set True only for emergency disk reclaim
-TASK_HISTORY_MAINTENANCE_OPTIMIZATION = True  # Run OPTIMIZE TABLE after normal delete (reclaims disk space safely)
+TASK_HISTORY_MAINTENANCE_OPTIMIZATION = False  # OFF: OPTIMIZE rebuilds the table and needs free disk equal to its size; daily delete + InnoDB space reuse keeps it flat. Use *_TABLE_SWAP_MODE=True once to reclaim a backlog.
 
 # Alert Cleanup Settings (AM_Alert) - ⚠️ LEGACY ⚠️
 # These tables (AM_Alert, AM_AlertGroup, etc.) are no longer used in current architecture.
@@ -400,7 +400,7 @@ NOTIFICATION_AUDIT_DAYS_TO_KEEP = 30
 NOTIFICATION_AUDIT_BATCH_SIZE = 2000   # ~100K rows/day; 2000×200 = 400K capacity per run
 NOTIFICATION_AUDIT_MAX_ITERATIONS = 200  # Must handle 100K+ rows/day of notification audit data
 NOTIFICATION_AUDIT_TABLE_SWAP_MODE = False  # Set True only for emergency disk reclaim
-NOTIFICATION_AUDIT_MAINTENANCE_OPTIMIZATION = True  # Run OPTIMIZE TABLE after normal delete (reclaims disk space safely)
+NOTIFICATION_AUDIT_MAINTENANCE_OPTIMIZATION = False  # OFF: OPTIMIZE rebuilds the table and needs free disk equal to its size; daily delete + InnoDB space reuse keeps it flat. Use *_TABLE_SWAP_MODE=True once to reclaim a backlog.
 
 # Ticketing Audit Cleanup Settings (TKT_Ticketing_Audit)
 # Tracks all ticket creation, updates, and failures for audit and compliance
@@ -409,7 +409,7 @@ TICKETING_AUDIT_DAYS_TO_KEEP = 40  # 40 days for compliance/audit requirements
 TICKETING_AUDIT_BATCH_SIZE = 1000      # ~80 rows/day; tiny table, default batch is fine
 TICKETING_AUDIT_MAX_ITERATIONS = 100   # More than enough for ~80 rows/day
 TICKETING_AUDIT_TABLE_SWAP_MODE = False  # Regular maintenance mode (no disk reclaim)
-TICKETING_AUDIT_MAINTENANCE_OPTIMIZATION = True  # Run OPTIMIZE TABLE after normal delete (reclaims disk space safely)
+TICKETING_AUDIT_MAINTENANCE_OPTIMIZATION = False  # OFF: OPTIMIZE rebuilds the table and needs free disk equal to its size; daily delete + InnoDB space reuse keeps it flat. Use *_TABLE_SWAP_MODE=True once to reclaim a backlog.
 
 # User Audit Cleanup Settings (UA_User_Audit) - LARGEST TABLE
 # Tracks all user actions: login, logout, create, read, update, delete, navigate
@@ -419,7 +419,7 @@ USER_AUDIT_DAYS_TO_KEEP = 7  # Aggressive cleanup - table grows fast
 USER_AUDIT_BATCH_SIZE = 5000  # Larger batches for faster cleanup
 USER_AUDIT_MAX_ITERATIONS = 500  # More iterations needed due to table size
 USER_AUDIT_TABLE_SWAP_MODE = False  # Set True only for emergency disk reclaim
-USER_AUDIT_MAINTENANCE_OPTIMIZATION = True  # Run OPTIMIZE TABLE after normal delete (reclaims disk space safely)
+USER_AUDIT_MAINTENANCE_OPTIMIZATION = False  # OFF: OPTIMIZE rebuilds the table and needs free disk equal to its size; daily delete + InnoDB space reuse keeps it flat. Use *_TABLE_SWAP_MODE=True once to reclaim a backlog.
 
 # ============================================================================
 # TABLE SWAP MODE & MAINTENANCE OPTIMIZATION EXPLANATION

@@ -20,6 +20,51 @@ import mysql.connector
 logger = logging.getLogger(__name__)
 
 
+def _connect_oscar_db(connection_id: str):
+    """
+    Open the OSCAR database: the Airflow connection when it exists, otherwise
+    the DB password secret mounted in every Airflow container.
+
+    No install step creates the `oscar_db` connection, so without the fallback
+    every database cleanup task fails and the tables grow until the disk fills.
+    The secret is a container path, so this works wherever OSCAR is installed.
+    A connection that exists but cannot connect is an error, not a fallback.
+    """
+    try:
+        conn = BaseHook.get_connection(connection_id)
+    except Exception as lookup_error:
+        password_file = os.getenv('OSCAR_DB_PASSWORD_FILE', '/run/secrets/airflow_db_password')
+        try:
+            with open(password_file) as fh:
+                password = fh.read().strip()
+        except OSError as secret_error:
+            raise RuntimeError(
+                f"No Airflow connection '{connection_id}' ({lookup_error}) and no DB password "
+                f"secret at {password_file} ({secret_error}); cannot reach the OSCAR database"
+            ) from secret_error
+        host = os.getenv('OSCAR_DB_HOST', 'db')
+        user = os.getenv('OSCAR_DB_USER', 'oscar')
+        database = os.getenv('OSCAR_DB_NAME', 'oscar')
+        logger.warning(
+            f"Airflow connection '{connection_id}' not found; connecting as {user}@{host}/{database} "
+            f"with the password from {password_file}"
+        )
+        return mysql.connector.connect(
+            host=host,
+            port=int(os.getenv('OSCAR_DB_PORT', '3306')),
+            user=user,
+            password=password,
+            database=database
+        )
+    return mysql.connector.connect(
+        host=conn.host,
+        port=conn.port or 3306,
+        user=conn.login,
+        password=conn.password,
+        database=conn.schema
+    )
+
+
 def create_timeout_checker(task_name: str, max_minutes: int):
     """
     Create a timeout checker function for database cleanup tasks.
@@ -74,18 +119,28 @@ def create_worklog(**context):
         {"key": "initiated_by", "value": "airflow"},
     ]
 
-    worklog = hook.create_worklog(
-        name="Oscar Housekeeping Worklog",
-        description="Worklog for housekeeping logs cleanup",
-        worklog_type=WorkLogType.DB,
-        metadata=metadata,
-    )
+    # The worklog is a report, not a gate: every cleanup task depends on this
+    # one, so a worklog API failure here must not stop the disk cleanup. The
+    # cleanup tasks already run without a worklog (wl_write ignores errors).
+    try:
+        worklog = hook.create_worklog(
+            name="Oscar Housekeeping Worklog",
+            description="Worklog for housekeeping logs cleanup",
+            worklog_type=WorkLogType.DB,
+            metadata=metadata,
+        )
+    except Exception as e:
+        logger.error(f"Worklog could not be created; cleanup continues without a worklog: {e}")
+        return None
 
     logger.info(f"Created worklog with ID: {worklog['id']}")
 
     context['ti'].xcom_push(key='worklog_id', value=worklog['id'])
 
-    hook.info("Starting housekeeping logs cleanup workflow")
+    try:
+        hook.info("Starting housekeeping logs cleanup workflow")
+    except Exception as e:
+        logger.error(f"Could not add the start entry to worklog {worklog['id']}; cleanup continues: {e}")
 
     return worklog['id']
 
@@ -564,13 +619,7 @@ def clean_task_history(**context):
     max_iterations = int(getattr(housekeeping_config, 'TASK_HISTORY_MAX_ITERATIONS', getattr(housekeeping_config, 'MAX_ITERATIONS', 100)))
     table_swap_mode = getattr(housekeeping_config, 'TASK_HISTORY_TABLE_SWAP_MODE', False)
 
-    conn = BaseHook.get_connection(connection_id)
-    db = mysql.connector.connect(
-        host=conn.host,
-        user=conn.login,
-        password=conn.password,
-        database=conn.schema
-    )
+    db = _connect_oscar_db(connection_id)
     cursor = db.cursor()
 
     # Setup worklog hook
@@ -941,13 +990,7 @@ def clean_alert_history(**context):
     days_to_keep = int(getattr(housekeeping_config, 'ALERTS_DAYS_TO_KEEP', 7))
     batch_size = int(getattr(housekeeping_config, 'ALERTS_BATCH_SIZE', 1000))
 
-    conn = BaseHook.get_connection(connection_id)
-    db = mysql.connector.connect(
-        host=conn.host,
-        user=conn.login,
-        password=conn.password,
-        database=conn.schema
-    )
+    db = _connect_oscar_db(connection_id)
     cursor = db.cursor()
 
     # Setup worklog hook
@@ -1200,13 +1243,7 @@ def clean_alert_history_records(**context):
     days_to_keep = int(getattr(housekeeping_config, 'ALERT_HISTORY_DAYS_TO_KEEP', 30))  # Default to 30 days for history
     batch_size = int(getattr(housekeeping_config, 'ALERT_HISTORY_BATCH_SIZE', 1000))
 
-    conn = BaseHook.get_connection(connection_id)
-    db = mysql.connector.connect(
-        host=conn.host,
-        user=conn.login,
-        password=conn.password,
-        database=conn.schema
-    )
+    db = _connect_oscar_db(connection_id)
     cursor = db.cursor()
 
     # Setup worklog hook
@@ -1423,13 +1460,7 @@ def clean_notification_audit_history(**context):
     max_iterations = int(getattr(housekeeping_config, 'NOTIFICATION_AUDIT_MAX_ITERATIONS', 100))
     table_swap_mode = getattr(housekeeping_config, 'NOTIFICATION_AUDIT_TABLE_SWAP_MODE', False)
 
-    conn = BaseHook.get_connection(connection_id)
-    db = mysql.connector.connect(
-        host=conn.host,
-        user=conn.login,
-        password=conn.password,
-        database=conn.schema
-    )
+    db = _connect_oscar_db(connection_id)
     cursor = db.cursor()
 
     # Setup worklog hook
@@ -1729,13 +1760,7 @@ def clean_ticketing_audit_history(**context):
     max_iterations = int(getattr(housekeeping_config, 'TICKETING_AUDIT_MAX_ITERATIONS', 100))
     table_swap_mode = getattr(housekeeping_config, 'TICKETING_AUDIT_TABLE_SWAP_MODE', False)
 
-    conn = BaseHook.get_connection(connection_id)
-    db = mysql.connector.connect(
-        host=conn.host,
-        user=conn.login,
-        password=conn.password,
-        database=conn.schema
-    )
+    db = _connect_oscar_db(connection_id)
     cursor = db.cursor()
 
     # Setup worklog hook
@@ -2037,13 +2062,7 @@ def clean_user_audit_history(**context):
     batch_size = int(getattr(housekeeping_config, 'USER_AUDIT_BATCH_SIZE', 5000))
     max_iterations = int(getattr(housekeeping_config, 'USER_AUDIT_MAX_ITERATIONS', 500))
 
-    conn = BaseHook.get_connection(connection_id)
-    db = mysql.connector.connect(
-        host=conn.host,
-        user=conn.login,
-        password=conn.password,
-        database=conn.schema
-    )
+    db = _connect_oscar_db(connection_id)
     cursor = db.cursor()
 
     # Setup worklog hook
@@ -2454,6 +2473,12 @@ def close_worklog(**context):
         "value": json.dumps(overall_summary),
     })
 
+    # The summary always reaches the task log, with or without a worklog.
+    logger.info(f"Housekeeping summary: {json.dumps(overall_summary)}")
+    if not worklog_id:
+        logger.error("No worklog for this run (creation failed); summary is in this task log only")
+        return None
+
     # Persist all reports as worklog metadata
     try:
         hook.add_metadata(metadata_items)
@@ -2461,24 +2486,54 @@ def close_worklog(**context):
         logger.info(f"Persisted {len(metadata_items)} cleanup report metadata entries to worklog {worklog_id}")
     except Exception as e:
         logger.error(f"Failed to persist cleanup reports as metadata: {e}")
-        hook.warning(f"Could not persist cleanup reports to metadata: {e}")
 
-    hook.info(f"Workflow completed, closing worklog for worklog id: {worklog_id}")
-
-    closed_worklog = hook.close_worklog()
+    # A worklog API failure must not mark a completed cleanup as failed.
+    try:
+        hook.info(f"Workflow completed, closing worklog for worklog id: {worklog_id}")
+        closed_worklog = hook.close_worklog()
+    except Exception as e:
+        logger.error(f"Could not close worklog {worklog_id}; cleanup itself is complete: {e}")
+        return worklog_id
     logger.info(f"Closed worklog with ID: {closed_worklog['id']}")
 
     return closed_worklog['id']
 
 
+HOUSEKEEPING_GUIDE_MD = """
+## OSCAR Housekeeping — user guide
+
+Runs **daily at 11:00 UTC**. Deletes old rows and old log files so the disk stays flat.
+All settings are in `plugins/helpers/oscar_housekeeping_config.py` (on the box: `/opt/oscar/app/oscar-workflow/airflow/`).
+The file is read fresh on every run: edit, save, then **Trigger DAG**. No restart needed.
+
+| Mode | Settings | What a run does | Gives disk back? | Use when |
+|---|---|---|---|---|
+| Dry run | `DRY_RUN_MODE = True` | counts what it would delete, changes nothing | no | previewing |
+| **Daily delete** (default) | `DRY_RUN_MODE = False`, `X_TABLE_SWAP_MODE = False`, `X_MAINTENANCE_OPTIMIZATION = False` | deletes rows older than retention; MySQL reuses the room | no, stops growth | every day |
+| Delete + optimize | `X_MAINTENANCE_OPTIMIZATION = True` | deletes, then rebuilds the table | yes | **avoid on big tables**: needs free disk equal to the table size |
+| Swap | `X_TABLE_SWAP_MODE = True` | copies rows to keep into a new table, swaps it in, drops the old one | yes, at once | one run to shrink a grown table, then set back to `False` |
+
+`X` = `TASK_HISTORY`, `NOTIFICATION_AUDIT`, `USER_AUDIT`, `TICKETING_AUDIT`.
+Retention: `X_DAYS_TO_KEEP` (alert history: `ALERT_HISTORY_DAYS_TO_KEEP`).
+
+**Before a swap:** no other run in progress, and free disk on `/opt/docker` larger than the rows kept (40 GB+ is safe).
+**If a run fails:** open the failed task's log; worklog errors no longer stop the cleanup.
+"""
+
+
 with DAG(
     dag_id='oscar_housekeeping_cleanup',
+    doc_md=HOUSEKEEPING_GUIDE_MD,
     default_args=default_args,
     description='Housekeeping: create worklog -> clean Airflow logs -> close worklog',
     schedule=getattr(housekeeping_config, 'DAG_SCHEDULE', '0 11 * * *'),  # Daily at 3 AM PST (11 AM UTC)
     dagrun_timeout=timedelta(minutes=getattr(housekeeping_config, 'DAG_TIMEOUT_MINUTES', 120)),
     start_date=datetime(2023, 1, 1),
     catchup=False,
+    # One run at a time: overlapping runs delete the same rows and deadlock
+    # each other (a manual trigger while the scheduled run is active, or the
+    # scheduled run Airflow starts on unpause).
+    max_active_runs=1,
     tags=['housekeeping', 'logs', 'worklog'],
 ):
     create_worklog_task = create_worklog()
