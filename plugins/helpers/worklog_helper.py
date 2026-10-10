@@ -100,7 +100,7 @@ class SyncWorkLogManager:
             if category is not None:
                 payload["category"] = category
 
-            logger.debug(f"[SyncWorkLogManager] Creating worklog with payload: {json.dumps(payload)}")
+            logger.debug("[SyncWorkLogManager] Creating worklog with %d metadata items", len(metadata or []))
 
             with httpx.Client(verify=self.verify_ssl) as client:
                 response = client.post(
@@ -110,8 +110,8 @@ class SyncWorkLogManager:
                 )
 
                 if response.status_code != 201:
-                    logger.error(f"[SyncWorkLogManager] Failed to create worklog: {response.text}")
-                    raise Exception(f"Failed to create worklog: {response.text}")
+                    logger.error("[SyncWorkLogManager] Failed to create worklog (HTTP %s)", response.status_code)
+                    raise Exception(f"Failed to create worklog (HTTP {response.status_code})")
 
                 worklog_data = response.json()
                 self.current_worklog_id = worklog_data["id"]
@@ -121,7 +121,7 @@ class SyncWorkLogManager:
                 return worklog_data
 
         except Exception as e:
-            logger.error(f"[SyncWorkLogManager] Error creating worklog: {str(e)}")
+            logger.error("[SyncWorkLogManager] Error creating worklog (%s)", type(e).__name__)
             raise
 
     def get(self, worklog_id: Optional[str] = None) -> Dict[str, Any]:
@@ -199,7 +199,7 @@ class SyncWorkLogManager:
                 logger.warning("[SyncWorkLogManager] No update parameters provided")
                 return self.get(id_to_use)
 
-            logger.debug(f"[SyncWorkLogManager] Updating worklog {id_to_use} with payload: {json.dumps(payload)}")
+            logger.debug("[SyncWorkLogManager] Updating worklog %s with %d metadata items", id_to_use, len(metadata or []))
 
             with httpx.Client(verify=self.verify_ssl) as client:
                 response = client.put(
@@ -209,8 +209,8 @@ class SyncWorkLogManager:
                 )
 
                 if response.status_code != 200:
-                    logger.error(f"[SyncWorkLogManager] Failed to update worklog: {response.text}")
-                    raise Exception(f"Failed to update worklog: {response.text}")
+                    logger.error("[SyncWorkLogManager] Failed to update worklog (HTTP %s)", response.status_code)
+                    raise Exception(f"Failed to update worklog (HTTP {response.status_code})")
 
                 worklog = response.json()
 
@@ -220,7 +220,7 @@ class SyncWorkLogManager:
                 return worklog
 
         except Exception as e:
-            logger.error(f"[SyncWorkLogManager] Error updating worklog: {str(e)}")
+            logger.error("[SyncWorkLogManager] Error updating worklog (%s)", type(e).__name__)
             raise
 
     def close(self, worklog_id: Optional[str] = None) -> Dict[str, Any]:
@@ -415,7 +415,7 @@ class SyncWorkLogManager:
             yield self
 
         except Exception as e:
-            logger.error(f"[SyncWorkLogManager] Error in worklog context manager: {str(e)}")
+            logger.error("[SyncWorkLogManager] Error in worklog context manager (%s)", type(e).__name__)
             raise
         finally:
             # Close the worklog if we have one

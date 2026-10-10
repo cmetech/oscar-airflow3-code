@@ -146,11 +146,11 @@ def check_system_health(**context):
             }
         )
 
-        worklog_hook.add_metadata({
-            "health_status": health_status,
-            "alerts_generated": str(alerts_generated),
-            "check_duration": result.get('duration', 'unknown')
-        })
+        worklog_hook.add_metadata([
+            {"key": "health_status", "value": health_status},
+            {"key": "alerts_generated", "value": str(alerts_generated)},
+            {"key": "check_duration", "value": str(result.get('duration', 'unknown'))},
+        ])
 
         worklog_hook.info("System health check completed")
 
@@ -383,10 +383,10 @@ This is an automated alert from the OSCAR monitoring system.
                 """
             })
 
-        worklog_hook.add_metadata({
-            "report_status": report_status,
-            "report_file": f"/tmp/oscar_health_report_{context['ds']}.json"
-        })
+        worklog_hook.add_metadata([
+            {"key": "report_status", "value": report_status},
+            {"key": "report_file", "value": f"/tmp/oscar_health_report_{context['ds']}.json"},
+        ])
 
         return {
             'status': report_status,

@@ -154,7 +154,7 @@ class WorkLogHook(BaseHook):
             if category is not None:
                 payload["category"] = category
 
-            logger.debug(f"Creating worklog with payload: {json.dumps(payload)}")
+            logger.debug("Creating worklog with %d metadata items", len(metadata or []))
 
             with httpx.Client(verify=self.verify_ssl) as client:
                 response = client.post(
@@ -165,8 +165,8 @@ class WorkLogHook(BaseHook):
                 )
 
                 if response.status_code != 201:
-                    logger.error(f"Failed to create worklog: {response.text}")
-                    raise Exception(f"Failed to create worklog: {response.text}")
+                    logger.error("Failed to create worklog (HTTP %s)", response.status_code)
+                    raise Exception(f"Failed to create worklog (HTTP {response.status_code})")
 
                 worklog_data = response.json()
 
@@ -177,7 +177,7 @@ class WorkLogHook(BaseHook):
                 return worklog_data
 
         except Exception as e:
-            logger.error(f"Error creating worklog: {str(e)}")
+            logger.error("Error creating worklog (%s)", type(e).__name__)
             raise
 
     def get_worklog(self, worklog_id: Optional[str] = None) -> Dict[str, Any]:
@@ -429,7 +429,7 @@ class WorkLogHook(BaseHook):
             raise ValueError("No metadata items provided")
 
         try:
-            logger.debug(f"Adding metadata to worklog {id_to_use}: {metadata_items}")
+            logger.debug("Adding %d metadata items to worklog %s", len(metadata_items), id_to_use)
 
             with httpx.Client(verify=self.verify_ssl) as client:
                 # First, get the current worklog to check if it's open and get existing metadata
@@ -440,8 +440,8 @@ class WorkLogHook(BaseHook):
                 )
 
                 if get_response.status_code != 200:
-                    logger.error(f"Failed to get worklog: {get_response.text}")
-                    raise Exception(f"Failed to get worklog: {get_response.text}")
+                    logger.error("Failed to get worklog for metadata update (HTTP %s)", get_response.status_code)
+                    raise Exception(f"Failed to get worklog for metadata update (HTTP {get_response.status_code})")
 
                 worklog_data = get_response.json()
                 if worklog_data.get("status") != "OPEN":
@@ -449,9 +449,9 @@ class WorkLogHook(BaseHook):
                     raise Exception(f"Cannot add metadata to worklog that is not open (status: {worklog_data.get('status')})")
 
                 # Get existing metadata
-                existing_metadata = worklog_data.get("metadata", [])
+                existing_metadata = worklog_data.get("metadata") or []
 
-                logger.info(f"Existing metadata: {existing_metadata}")
+                logger.debug("Worklog %s has %d existing metadata items", id_to_use, len(existing_metadata))
 
                 # Combine existing metadata with new metadata
                 combined_metadata = existing_metadata.copy()  # Start with existing metadata
@@ -461,28 +461,22 @@ class WorkLogHook(BaseHook):
                     key = metadata_item.get("key")
                     value = metadata_item.get("value")
 
-                    if not key or not value:
-                        logger.warning(f"Skipping invalid metadata item: {metadata_item}")
-                        continue
-
                     # Check if key already exists and update it, otherwise add new
                     key_exists = False
                     for meta_item in combined_metadata:
                         if meta_item.get("key") == key:
                             meta_item["value"] = value  # Update existing key (latest value wins)
                             key_exists = True
-                            logger.debug(f"Updated existing metadata: {key}={value}")
                             break
 
                     if not key_exists:
                         combined_metadata.append({"key": key, "value": value})  # Append new key
-                        logger.debug(f"Added new metadata: {key}={value}")
 
                 # Send complete combined metadata
                 logger.info(f"Adding combined metadata to worklog {id_to_use}")
                 update_payload = {"metadata": combined_metadata}
 
-                logger.info(f"Adding combined metadata to worklog {id_to_use} with payload: {json.dumps(update_payload)}")
+                logger.debug("Sending %d combined metadata items to worklog %s", len(combined_metadata), id_to_use)
 
                 response = client.put(
                     f"{self.base_url}/{id_to_use}",
@@ -492,12 +486,12 @@ class WorkLogHook(BaseHook):
                 )
 
                 if response.status_code != 200:
-                    logger.error(f"Failed to add combined metadata: {response.text}")
-                    raise Exception(f"Failed to add combined metadata: {response.text}")
+                    logger.error("Failed to add combined metadata (HTTP %s)", response.status_code)
+                    raise Exception(f"Failed to add combined metadata (HTTP {response.status_code})")
 
                 logger.info(f"Successfully added/updated {len(metadata_items)} metadata items to worklog {id_to_use}")
                 return response.json()
 
         except Exception as e:
-            logger.error(f"Error adding metadata: {str(e)}")
+            logger.error("Error adding metadata (%s)", type(e).__name__)
             raise

@@ -446,13 +446,13 @@ def validate_and_parse_alert(**context) -> Dict[str, Any]:
 
         # Add incident metadata to worklog if present
         if incident_number:
-            worklog_hook.add_metadata({"incident_number": incident_number})
+            worklog_hook.add_metadata([{"key": "incident_number", "value": incident_number}])
         if incident_severity:
-            worklog_hook.add_metadata({"incident_severity": incident_severity})
+            worklog_hook.add_metadata([{"key": "incident_severity", "value": incident_severity}])
         if ticket_id:
-            worklog_hook.add_metadata({"ticket_id": ticket_id})
+            worklog_hook.add_metadata([{"key": "ticket_id", "value": ticket_id}])
         if create_ticket:
-            worklog_hook.add_metadata({"ticketing_system": create_ticket})
+            worklog_hook.add_metadata([{"key": "ticketing_system", "value": create_ticket}])
 
         # Store parsed data in XCom
         parsed_data = {
@@ -1166,11 +1166,11 @@ def update_incident_ticket(**context):
     context['ti'].xcom_push(key='ticket_update_result', value=ticket_update_result)
 
     # Add ticket update status to worklog metadata
-    worklog_hook.add_metadata({
-        "ticket_updated": str(ticket_update_result['updated']),
-        "ticket_system": ticket_update_result.get('system', 'N/A'),
-        "ticket_id": ticket_update_result.get('ticket_id', 'N/A')
-    })
+    worklog_hook.add_metadata([
+        {"key": "ticket_updated", "value": str(ticket_update_result['updated'])},
+        {"key": "ticket_system", "value": ticket_update_result.get('system', 'N/A')},
+        {"key": "ticket_id", "value": ticket_update_result.get('ticket_id', 'N/A')},
+    ])
 
     logger.info(f"Ticket update completed: updated={ticket_update_result['updated']}, system={ticket_update_result.get('system')}, id={ticket_update_result.get('ticket_id')}")
 
@@ -1547,11 +1547,11 @@ def handle_task_failure(**context):
             worklog_hook.error("Recovery workflow terminated due to task failure")
 
             # Add failure metadata
-            worklog_hook.add_metadata({
-                "failed_task": task_instance.task_id if task_instance else "unknown",
-                "failure_reason": str(exception) if exception else "unknown",
-                "failure_time": datetime.now().strftime('%Y-%m-%d %H:%M:%S UTC')
-            })
+            worklog_hook.add_metadata([
+                {"key": "failed_task", "value": task_instance.task_id if task_instance else "unknown"},
+                {"key": "failure_reason", "value": str(exception) if exception else "unknown"},
+                {"key": "failure_time", "value": datetime.now().strftime('%Y-%m-%d %H:%M:%S UTC')},
+            ])
 
             # Close the worklog
             worklog_hook.close_worklog()

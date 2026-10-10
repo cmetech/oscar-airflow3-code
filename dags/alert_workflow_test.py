@@ -142,13 +142,13 @@ def validate_and_parse_alert(**context) -> Dict[str, Any]:
         logger.info(f"Fired Workflows: {fired_workflows or 'None'}")
 
         # Update worklog with alert details
-        hook.add_metadata({"alert_name": alert_name})
-        hook.add_metadata({"severity": severity})
-        hook.add_metadata({"fingerprint": fingerprint})
+        hook.add_metadata([{"key": "alert_name", "value": alert_name}])
+        hook.add_metadata([{"key": "severity", "value": severity}])
+        hook.add_metadata([{"key": "fingerprint", "value": fingerprint}])
         if incident_number:
-            hook.add_metadata({"incident_number": incident_number})
+            hook.add_metadata([{"key": "incident_number", "value": incident_number}])
         if ticket_id:
-            hook.add_metadata({"ticket_id": ticket_id})
+            hook.add_metadata([{"key": "ticket_id", "value": ticket_id}])
 
         # Store parsed alert for downstream tasks
         context['ti'].xcom_push(key='parsed_alert', value=alert_data)
@@ -297,7 +297,7 @@ def process_incident(**context) -> Dict[str, Any]:
 
         if not alert_data:
             hook.warning("No alert data available for incident processing - continuing with limited functionality")
-            hook.add_metadata({"processing_issue": "missing_alert_data"})
+            hook.add_metadata([{"key": "processing_issue", "value": "missing_alert_data"}])
             return {"processed": False, "reason": "no_alert_data"}
 
         # Process incident information
@@ -368,7 +368,7 @@ def process_incident(**context) -> Dict[str, Any]:
     except Exception as e:
         # Ensure we log the error to worklog if possible
         hook.error(f"Error during incident processing: {str(e)}")
-        hook.add_metadata({"error": str(e), "processing_stage": "incident_analysis"})
+        hook.add_metadata([{"key": "error", "value": str(e)}, {"key": "processing_stage", "value": "incident_analysis"}])
         logger.error(f"Incident processing failed: {str(e)}")
         raise
 
