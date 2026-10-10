@@ -37,6 +37,7 @@ class WorkLogCreatePayload(TypedDict, total=False):
     type: str
     status: str
     description: Optional[str]
+    category: Optional[str]
     metadata: Optional[List[Dict[str, str]]]
 
 
@@ -124,13 +125,15 @@ class WorkLogHook(BaseHook):
 
     def create_worklog(self, name: str, description: Optional[str] = None,
                        worklog_type: Union[WorkLogType, str] = WorkLogType.DB,
-                       metadata: Optional[List[Dict[str, str]]] = None) -> Dict[str, Any]:
+                       metadata: Optional[List[Dict[str, str]]] = None,
+                       category: Optional[str] = None) -> Dict[str, Any]:
         """
         Create a new worklog and set it as the current worklog.
 
         :param name: Name of the worklog
         :param description: Optional description
         :param worklog_type: Type of worklog (DB or ELASTIC)
+        :param category: Optional worklog group
         :param metadata: Optional list of key-value pairs as metadata
         :return: Dict containing the created worklog details
         """
@@ -147,6 +150,9 @@ class WorkLogHook(BaseHook):
 
             if metadata is not None:
                 payload["metadata"] = metadata
+
+            if category is not None:
+                payload["category"] = category
 
             logger.debug(f"Creating worklog with payload: {json.dumps(payload)}")
 

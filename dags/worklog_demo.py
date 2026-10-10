@@ -39,12 +39,16 @@ def create_worklog(**context):
         {"key": "version", "value": "2.0"}
     ]
 
+    # Find this group/environment via GET /api/v1/worklogs?filters=<URL-encoded JSON>:
+    # {"items":[{"field":"category","operator":"equals","value":"network-operations"},
+    #           {"field":"metadata:environment","operator":"equals","value":"development"}], "logicOperator":"and"}
     # Create the worklog
     worklog = hook.create_worklog(
         name="Airflow WorkLog Test - Extended",
         description="Enhanced WorkLog test with continuous entries for refresh testing",
         worklog_type=WorkLogType.DB,
-        metadata=metadata
+        metadata=metadata,
+        category="network-operations"
     )
 
     logger.info(f"Created worklog with ID: {worklog['id']}")

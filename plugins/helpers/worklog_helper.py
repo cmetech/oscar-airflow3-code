@@ -13,6 +13,7 @@ from datetime import datetime
 from enum import Enum
 
 logger = logging.getLogger('oscar-taskmanager')
+_MISSING = object()
 
 
 class WorkLogStatus(str, Enum):
@@ -67,7 +68,8 @@ class SyncWorkLogManager:
 
     def create(self, name: str, description: Optional[str] = None,
                worklog_type: Union[WorkLogType, str] = WorkLogType.DB,
-               metadata: Optional[List[Dict[str, str]]] = None) -> Dict[str, Any]:
+               metadata: Optional[List[Dict[str, str]]] = None,
+               category: Optional[str] = None) -> Dict[str, Any]:
         """
         Create a new worklog.
 
@@ -76,6 +78,7 @@ class SyncWorkLogManager:
             description: Optional description
             worklog_type: Type of worklog (DB or ELASTIC)
             metadata: Optional list of key-value pairs as metadata
+            category: Optional worklog group
 
         Returns:
             Dict containing the created worklog details
@@ -93,6 +96,9 @@ class SyncWorkLogManager:
 
             if metadata is not None:
                 payload["metadata"] = metadata
+
+            if category is not None:
+                payload["category"] = category
 
             logger.debug(f"[SyncWorkLogManager] Creating worklog with payload: {json.dumps(payload)}")
 
@@ -158,7 +164,8 @@ class SyncWorkLogManager:
             raise
 
     def update(self, worklog_id: Optional[str] = None, name: Optional[str] = None,
-               description: Optional[str] = None, metadata: Optional[List[Dict[str, str]]] = None) -> Dict[str, Any]:
+               description: Optional[str] = None, metadata: Optional[List[Dict[str, str]]] = None,
+               category: Union[str, None, object] = _MISSING) -> Dict[str, Any]:
         """
         Update a worklog.
 
@@ -167,6 +174,7 @@ class SyncWorkLogManager:
             name: New name for the worklog
             description: New description for the worklog
             metadata: New metadata for the worklog
+            category: New group; omitted preserves it, None clears it
 
         Returns:
             Dict containing the updated worklog details
@@ -184,6 +192,8 @@ class SyncWorkLogManager:
                 payload["description"] = description
             if metadata is not None:
                 payload["metadata"] = metadata
+            if category is not _MISSING:
+                payload["category"] = category
 
             if not payload:
                 logger.warning("[SyncWorkLogManager] No update parameters provided")
@@ -376,7 +386,8 @@ class SyncWorkLogManager:
     @contextmanager
     def open(self, name: str, description: Optional[str] = None,
              worklog_type: Union[WorkLogType, str] = WorkLogType.DB,
-             metadata: Optional[List[Dict[str, str]]] = None) -> Iterator["SyncWorkLogManager"]:
+             metadata: Optional[List[Dict[str, str]]] = None,
+             category: Optional[str] = None) -> Iterator["SyncWorkLogManager"]:
         """
         Context manager for creating, using, and automatically closing a worklog.
 
@@ -385,13 +396,14 @@ class SyncWorkLogManager:
             description: Optional description
             worklog_type: Type of worklog (DB or ELASTIC)
             metadata: Optional list of key-value pairs as metadata
+            category: Optional worklog group
 
         Yields:
             The SyncWorkLogManager instance with an active worklog
         """
         try:
             # Create the worklog
-            self.create(name, description, worklog_type, metadata)
+            self.create(name, description, worklog_type, metadata, category)
 
             # Verify the worklog was created and is in OPEN state
             if not self.current_worklog_id:
