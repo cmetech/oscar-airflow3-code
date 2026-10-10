@@ -39,7 +39,7 @@ def create_worklog(**context):
         {"key": "version", "value": "2.0"}
     ]
 
-    # Find this group/environment via GET /api/v1/worklogs?filters=<URL-encoded JSON>:
+    # Find this group/environment via GET /api/v1/worklogs?filter=<URL-encoded JSON>:
     # {"items":[{"field":"category","operator":"equals","value":"network-operations"},
     #           {"field":"metadata:environment","operator":"equals","value":"development"}], "logicOperator":"and"}
     # Create the worklog
