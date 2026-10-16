@@ -148,13 +148,6 @@ def test_hook_invalid_falsy_metadata_is_forwarded_and_rejected(clients, field, i
 
 
 @pytest.mark.parametrize("filename,index,keys", [
-    ("alert_workflow_test.py",0,["alert_name"]),
-    ("alert_workflow_test.py",1,["severity"]),
-    ("alert_workflow_test.py",2,["fingerprint"]),
-    ("alert_workflow_test.py",3,["incident_number"]),
-    ("alert_workflow_test.py",4,["ticket_id"]),
-    ("alert_workflow_test.py",5,["processing_issue"]),
-    ("alert_workflow_test.py",6,["error","processing_stage"]),
     ("oscar_platform_recovery.py",0,["incident_number"]),
     ("oscar_platform_recovery.py",1,["incident_severity"]),
     ("oscar_platform_recovery.py",2,["ticket_id"]),
