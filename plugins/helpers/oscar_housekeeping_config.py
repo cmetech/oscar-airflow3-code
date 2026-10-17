@@ -11,9 +11,8 @@ import os
 # MASTER CONTROL FLAGS - Emergency Kill Switches (Per Category)
 # ============================================================================
 
-# Master flag to enable/disable Airflow logs cleanup
-# Set to False to completely skip Airflow logs cleanup in case of emergency
-ENABLE_AIRFLOW_LOGS_CLEANUP = True
+# airflow-log-groomer owns log retention; keep DAG deletion off to avoid overlapping cleaners.
+ENABLE_AIRFLOW_LOGS_CLEANUP = False
 
 # Master flag to enable/disable OSCAR database cleanup (TaskHistory, Alerts, Notifications)
 # Set to False to completely skip all database cleanup operations in case of emergency
@@ -55,7 +54,7 @@ ENABLE_USER_AUDIT_CLEANUP = True
 
 # Airflow Logs Cleaning
 AIRFLOW_LOGS_CLEANUP_ENABLED = True
-AIRFLOW_LOGS_DAYS_TO_KEEP = 7
+AIRFLOW_LOGS_DAYS_TO_KEEP = 3  # Legacy fallback only; active retention is AIRFLOW_LOG_RETENTION_DAYS in workflow.env.
 AIRFLOW_LOGS_MAX_FILE_SIZE = '200MB'           # Don't delete files larger than this
 AIRFLOW_LOGS_SAFE_EXTENSIONS = ['.log', '.log.gz']  # Only clean these extensions
 AIRFLOW_LOGS_EXCLUDE_PATTERNS = ['current', 'active', 'running']  # Don't delete files with these names

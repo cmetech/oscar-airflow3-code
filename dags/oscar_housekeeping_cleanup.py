@@ -2502,8 +2502,11 @@ def close_worklog(**context):
 HOUSEKEEPING_GUIDE_MD = """
 ## OSCAR Housekeeping — user guide
 
-Runs **daily at 11:00 UTC**. Deletes old rows and old log files so the disk stays flat.
-All settings are in `plugins/helpers/oscar_housekeeping_config.py` (on the box: `/opt/oscar/app/oscar-workflow/airflow/`).
+Runs **daily at 11:00 UTC** to clean database history. Airflow log deletion is disabled in this DAG:
+the independent `airflow-log-groomer` service deletes `.log` files unmodified for more than **3 days**
+and removes empty directories, checking every **15 minutes**. Override its retention with
+`AIRFLOW_LOG_RETENTION_DAYS` in `conf/env/workflow.env`; this does not change database retention.
+Database cleanup settings are in `plugins/helpers/oscar_housekeeping_config.py` (on the box: `/opt/oscar/app/oscar-workflow/airflow/`).
 The file is read fresh on every run: edit, save, then **Trigger DAG**. No restart needed.
 
 | Mode | Settings | What a run does | Gives disk back? | Use when |
@@ -2525,7 +2528,7 @@ with DAG(
     dag_id='oscar_housekeeping_cleanup',
     doc_md=HOUSEKEEPING_GUIDE_MD,
     default_args=default_args,
-    description='Housekeeping: create worklog -> clean Airflow logs -> close worklog',
+    description='Database housekeeping; Airflow log retention is managed by airflow-log-groomer',
     schedule=getattr(housekeeping_config, 'DAG_SCHEDULE', '0 11 * * *'),  # Daily at 3 AM PST (11 AM UTC)
     dagrun_timeout=timedelta(minutes=getattr(housekeeping_config, 'DAG_TIMEOUT_MINUTES', 120)),
     start_date=datetime(2023, 1, 1),

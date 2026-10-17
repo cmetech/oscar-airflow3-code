@@ -21,7 +21,6 @@ from hooks.worklog_hook import WorkLogHook  # type: ignore
 from hooks.notify_hook import NotifyHook  # type: ignore
 
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)
 
 # Email validation regex
 EMAIL_REGEX = re.compile(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$')
