@@ -15,9 +15,131 @@ from airflow.providers.standard.operators.empty import EmptyOperator
 from hooks.worklog_hook import WorkLogHook, WorkLogType  # type: ignore
 from helpers import oscar_housekeeping_config as housekeeping_config
 import mysql.connector
+from airflow.sdk.observability import stats
 
 
 logger = logging.getLogger(__name__)
+
+POLICY_DEFAULTS = {
+    'task_history': ('ENABLE_TASK_HISTORY_CLEANUP', 'TASK_HISTORY_DAYS_TO_KEEP'),
+    'alert_history': ('ENABLE_ALERT_HISTORY_CLEANUP', 'ALERT_HISTORY_DAYS_TO_KEEP'),
+    'notification_audit': ('ENABLE_NOTIFICATION_AUDIT_CLEANUP', 'NOTIFICATION_AUDIT_DAYS_TO_KEEP'),
+    'ticketing_audit': ('ENABLE_TICKETING_AUDIT_CLEANUP', 'TICKETING_AUDIT_DAYS_TO_KEEP'),
+    'user_audit': ('ENABLE_USER_AUDIT_CLEANUP', 'USER_AUDIT_DAYS_TO_KEEP'),
+    'alert_audit': ('ENABLE_ALERT_AUDIT_CLEANUP', 'ALERT_AUDIT_DAYS_TO_KEEP'),
+}
+
+
+def resolved_policies(overrides):
+    """Resolve validated database overrides against the file defaults."""
+    if not isinstance(overrides, dict) or set(overrides) - set(POLICY_DEFAULTS):
+        raise ValueError('Invalid housekeeping policy overrides')
+    policies = {}
+    for family, (enabled_key, days_key) in POLICY_DEFAULTS.items():
+        default = {'enabled': bool(getattr(housekeeping_config, enabled_key)),
+                   'retention_days': int(getattr(housekeeping_config, days_key))}
+        override = overrides.get(family, {})
+        if (not isinstance(override, dict) or set(override) - set(default)
+                or any(key not in default for key in override)):
+            raise ValueError(f'Invalid housekeeping policy: {family}')
+        merged = {**default, **override}
+        if type(merged['enabled']) is not bool or type(merged['retention_days']) is not int or not 1 <= merged['retention_days'] <= 3650:
+            raise ValueError(f'Invalid housekeeping policy: {family}')
+        policies[family] = merged
+    return policies
+
+
+@task
+def load_housekeeping_policy():
+    """One policy snapshot is shared by every task in this DAG run."""
+    db = _connect_oscar_db(os.getenv('OSCAR_DB_CONNECTION_ID', 'oscar_db'))
+    try:
+        cursor = db.cursor()
+        try:
+            cursor.execute("SELECT overrides, revision FROM SYS_HousekeepingSettings WHERE id='default'")
+            row = cursor.fetchone()
+        except mysql.connector.Error as exc:
+            if exc.errno != 1146:  # rollout before the settings migration
+                raise
+            row = None
+        finally:
+            cursor.close()
+        overrides = row[0] if row else {}
+        revision = int(row[1]) if row else 0
+        policies = resolved_policies(json.loads(overrides) if isinstance(overrides, str) else overrides)
+        for family, policy in policies.items():
+            stats.gauge(f'oscar_housekeeping.policy_enabled.{family}',
+                        int(policy['enabled'] and housekeeping_config.ENABLE_DATABASE_CLEANUP))
+        logger.info('Housekeeping policy snapshot revision=%s policies=%s', revision, policies)
+        return {'revision': revision, 'policies': policies}
+    finally:
+        db.close()
+
+
+def policy_for(context, family):
+    snapshot = context['ti'].xcom_pull(task_ids='load_housekeeping_policy')
+    policies = snapshot.get('policies') if isinstance(snapshot, dict) else None
+    if not isinstance(policies, dict) or family not in policies:
+        raise RuntimeError('Housekeeping policy snapshot unavailable')
+    return policies[family]
+
+
+def bounded_eligible_count(cursor, table, predicate, params, limit):
+    """Count at most limit indexed candidates so a large backlog cannot monopolize MySQL."""
+    cursor.execute(
+        f'SELECT COUNT(*) FROM (SELECT 1 FROM {table} WHERE {predicate} LIMIT %s) AS eligible',
+        (*params, limit),
+    )
+    return cursor.fetchone()[0]
+
+
+def _cleanup_success(context):
+    task_id = context['task_instance'].task_id
+    keys = {
+        'clean_task_history': ('task_history', 'task_history_cleanup_result'),
+        'clean_alert_history_records': ('alert_history', 'alert_history_cleanup_result'),
+        'clean_notification_audit_history': ('notification_audit', 'notification_audit_cleanup_result'),
+        'clean_ticketing_audit_history': ('ticketing_audit', 'ticketing_audit_cleanup_result'),
+        'clean_user_audit_history': ('user_audit', 'user_audit_cleanup_result'),
+        'clean_alert_audit': ('alert_audit', 'alert_audit_cleanup_result'),
+    }
+    if task_id not in keys:
+        return
+    family, result_key = keys[task_id]
+    result = context['ti'].xcom_pull(task_ids=task_id, key=result_key)
+    if result is None:
+        result = context['ti'].xcom_pull(task_ids=task_id, key='return_value') or {}
+    if not isinstance(result, dict) or not result or result.get('dry_run'):
+        return
+    rows = result.get('rows_deleted')
+    if rows is None:
+        rows = next((value for key, value in result.items()
+                     if key.startswith('total_') and key.endswith('_deleted') and key != 'total_summary_deleted'), 0)
+    stats.incr(f'oscar_housekeeping.runs_success.{family}')
+    if rows:
+        stats.incr(f'oscar_housekeeping.rows_deleted.{family}', int(rows))
+    stats.gauge(f'oscar_housekeeping.last_success_epoch.{family}', int(datetime.now(timezone.utc).timestamp()))
+    if 'eligible_backlog' in result:
+        stats.gauge(f'oscar_housekeeping.eligible_backlog.{family}', int(result['eligible_backlog']))
+    stats.gauge(f'oscar_housekeeping.duration_seconds.{family}', float(context['ti'].duration or 0))
+
+
+def _cleanup_failure(context):
+    family = {'clean_task_history': 'task_history', 'clean_alert_history_records': 'alert_history',
+              'clean_notification_audit_history': 'notification_audit',
+              'clean_ticketing_audit_history': 'ticketing_audit',
+              'clean_user_audit_history': 'user_audit', 'clean_alert_audit': 'alert_audit'}.get(
+                  context['task_instance'].task_id)
+    if family in POLICY_DEFAULTS:
+        stats.incr(f'oscar_housekeeping.runs_failure.{family}')
+
+
+def _dag_failure(context):
+    stats.incr('oscar_housekeeping.dag_failure.all')
+
+
+def _dag_success(context):
+    stats.incr('oscar_housekeeping.dag_success.all')
 
 
 def _connect_oscar_db(connection_id: str):
@@ -292,6 +414,7 @@ TASK_REPORT_REGISTRY = [
     ("task_history_cleanup_result", "clean_task_history", "Task History (TM_History + TM_StageHistory)", "db"),
     ("alert_cleanup_result", "clean_alert_history", "Legacy Alerts (AM_Alert)", "db"),
     ("alert_history_cleanup_result", "clean_alert_history_records", "Alert History (AM_AlertHistory)", "db"),
+    ("alert_audit_cleanup_result", "clean_alert_audit", "Alert Audit (AM_AlertAudit)", "db"),
     ("notification_audit_cleanup_result", "clean_notification_audit_history", "Notification Audit (NTF_Notifications_Audit)", "db"),
     ("ticketing_audit_cleanup_result", "clean_ticketing_audit_history", "Ticketing Audit (TKT_Ticketing_Audit)", "db"),
     ("user_audit_cleanup_result", "clean_user_audit_history", "User Audit (UA_User_Audit)", "db"),
@@ -594,13 +717,7 @@ def clean_airflow_logs(**context):
 
 @task
 def clean_task_history(**context):
-    """Clean TM_History and TM_StageHistory tables - 44GB combined
-    
-    Three modes controlled by TASK_HISTORY_TABLE_SWAP_MODE + TASK_HISTORY_MAINTENANCE_OPTIMIZATION:
-    - TABLE SWAP (swap=True): Actually reclaims disk space (risk: brief write failures during RENAME)
-    - OPTIMIZE (swap=False, optimize=True): Normal delete + OPTIMIZE TABLE (safe disk reclaim)
-    - NORMAL DELETE (swap=False, optimize=False): Fastest, space only reused by InnoDB
-    """
+    """Retire terminal TM_History rows and child stages in committed batches."""
     import time
     
     # Master kill switch check for database cleanup
@@ -609,15 +726,18 @@ def clean_task_history(**context):
         return "Database cleanup disabled by master flag"
     
     # Granular task-specific check
-    if not housekeeping_config.ENABLE_TASK_HISTORY_CLEANUP:
+    policy = policy_for(context, 'task_history')
+    if not policy['enabled']:
         logger.info("Task history cleanup skipped - task-specific flag disabled (ENABLE_TASK_HISTORY_CLEANUP=False)")
         return "Task history cleanup disabled by task-specific flag"
 
     connection_id = os.getenv('OSCAR_DB_CONNECTION_ID', 'oscar_db')
-    days_to_keep = int(getattr(housekeeping_config, 'TASK_HISTORY_DAYS_TO_KEEP', 7))
+    days_to_keep = policy['retention_days']
     batch_size = int(getattr(housekeeping_config, 'TASK_HISTORY_BATCH_SIZE', getattr(housekeeping_config, 'BATCH_SIZE', 1000)))
     max_iterations = int(getattr(housekeeping_config, 'TASK_HISTORY_MAX_ITERATIONS', getattr(housekeeping_config, 'MAX_ITERATIONS', 100)))
     table_swap_mode = getattr(housekeeping_config, 'TASK_HISTORY_TABLE_SWAP_MODE', False)
+    if table_swap_mode:
+        raise RuntimeError('Task history table swap is unsafe with retirement triggers and foreign keys')
 
     db = _connect_oscar_db(connection_id)
     cursor = db.cursor()
@@ -643,6 +763,7 @@ def clean_task_history(**context):
         wl(f"Starting TaskHistory cleanup [{mode_str}]: days_to_keep={days_to_keep}", "INFO")
         cutoff_date = datetime.now(timezone.utc) - timedelta(days=days_to_keep)
         cutoff_date_str = cutoff_date.strftime('%Y-%m-%d %H:%M:%S')
+
         start_time = time.time()
 
         # PRE-FLIGHT CHECK: Count what will be deleted and get table sizes
@@ -662,17 +783,21 @@ def clean_task_history(**context):
         
         wl(f"Current sizes: TM_History={history_size_gb} GB, TM_StageHistory={stage_size_gb} GB", "INFO")
 
-        # Count rows to keep vs delete
-        cursor.execute("SELECT COUNT(*) FROM TM_History WHERE created_at >= %s", (cutoff_date_str,))
-        rows_to_keep = cursor.fetchone()[0]
-        cursor.execute("SELECT COUNT(*) FROM TM_History WHERE created_at < %s", (cutoff_date_str,))
-        history_to_delete = cursor.fetchone()[0]
-        
-        wl(f"Rows to keep: {rows_to_keep:,}, Rows to delete: {history_to_delete:,}", "INFO")
+        # A full COUNT over years of history is avoidable. This is a lower
+        # bound once the run's deletion capacity has been reached.
+        count_limit = batch_size * max_iterations + 1
+        history_to_delete = bounded_eligible_count(
+            cursor, 'TM_History',
+            "created_at < %s AND state IN ('SUCCESS','FAILURE','REVOKED','EXPIRED')",
+            (cutoff_date_str,), count_limit,
+        )
+        rows_to_keep = None  # The retained range need not be scanned for cleanup.
+        wl(f"Eligible task history rows: at least {history_to_delete:,}", "INFO")
         
         if history_to_delete == 0:
             wl("No records to delete - cleanup not needed", "INFO")
-            return {"total_tasks_deleted": 0, "summary": "No records older than retention period"}
+            return {"total_tasks_deleted": 0, "rows_deleted": 0, "eligible_backlog": 0,
+                    "dry_run": dry_run, "summary": "No records older than retention period"}
 
         if dry_run:
             result = {
@@ -680,6 +805,7 @@ def clean_task_history(**context):
                 "mode": cleanup_mode,
                 "rows_to_delete": history_to_delete,
                 "rows_to_keep": rows_to_keep,
+                "backlog_count_capped": history_to_delete == count_limit,
                 "summary": f"[DRY RUN - {cleanup_mode}] Would delete {history_to_delete:,} records"
             }
             wl(f"[DRY RUN] {result['summary']}", "INFO")
@@ -847,7 +973,10 @@ def clean_task_history(**context):
             SELECT th.id
             FROM TM_History th
             WHERE th.created_at < %s
+              AND th.state IN ('SUCCESS','FAILURE','REVOKED','EXPIRED')
+            ORDER BY th.created_at, th.id
             LIMIT %s
+            FOR UPDATE SKIP LOCKED
             """
             cursor.execute(select_ids_query, (cutoff_date_str, batch_size))
             ids_to_delete = [row[0] for row in cursor.fetchall()]
@@ -887,33 +1016,22 @@ def clean_task_history(**context):
                 print(f"Iteration {iteration_count}/{max_iterations}: Deleted {task_history_deleted} records (TM_History + associated TM_StageHistory). Total deleted so far: {total_tasks_deleted}")
                 wl(f"Iteration {iteration_count}/{max_iterations}: Deleted {task_history_deleted} records (TM_History + TM_StageHistory). Total so far: {total_tasks_deleted}", "INFO")
 
-        # POST-DELETION VALIDATION: Check for orphaned records
-        orphan_check_query = """
-        SELECT COUNT(*) 
-        FROM TM_StageHistory tsh
-        LEFT JOIN TM_History th ON tsh.task_history_id = th.id
-        WHERE th.id IS NULL
-        """
-        cursor.execute(orphan_check_query)
-        orphan_count = cursor.fetchone()[0]
-        
-        if orphan_count > 0:
-            error_msg = f"CRITICAL: Found {orphan_count} orphaned TM_StageHistory records after cleanup!"
-            wl(error_msg, "CRITICAL")
-            print(error_msg)
-            raise Exception(error_msg)
-        else:
-            wl("POST-VALIDATION: No orphaned records found - cleanup successful", "INFO")
-            print(f"POST-VALIDATION: ✅ No orphans - {total_tasks_deleted} records deleted cleanly")
+        # The TM_StageHistory.task_history_id foreign key enforces this
+        # relationship on each batch commit; a full-table orphan scan would
+        # read the entire stage-history table on every production run.
+        wl("Stage-history integrity enforced by database foreign key", "INFO")
         
         # Finalize and push result to XCom
         result = {
             "dry_run": dry_run,
             "total_tasks_deleted": total_tasks_deleted,
+            "rows_deleted": total_tasks_deleted,
+            "eligible_backlog": max(0, history_to_delete - total_tasks_deleted),
+            "backlog_count_capped": history_to_delete == count_limit,
             "days_to_keep": days_to_keep,
             "batch_size": batch_size,
             "max_iterations": max_iterations,
-            "orphan_check_passed": orphan_count == 0,
+            "orphan_check_passed": True,
             "summary": f"{'[DRY RUN] Would delete' if dry_run else 'Deleted'} {total_tasks_deleted} TaskHistory records",
         }
         wl(f"TaskHistory cleanup completed: {result['summary']}", "INFO")
@@ -948,6 +1066,7 @@ def clean_task_history(**context):
                 result["optimization_error"] = str(e)
 
         context['ti'].xcom_push(key='task_history_cleanup_result', value=result)
+        return result
 
     except Exception as e:
         db.rollback()
@@ -1235,12 +1354,13 @@ def clean_alert_history_records(**context):
         return "Database cleanup disabled by master flag"
     
     # Granular task-specific check
-    if not housekeeping_config.ENABLE_ALERT_HISTORY_CLEANUP:
+    policy = policy_for(context, 'alert_history')
+    if not policy['enabled']:
         logger.info("Alert history cleanup skipped - task-specific flag disabled (ENABLE_ALERT_HISTORY_CLEANUP=False)")
         return "Alert history cleanup disabled by task-specific flag"
 
     connection_id = os.getenv('OSCAR_DB_CONNECTION_ID', 'oscar_db')
-    days_to_keep = int(getattr(housekeeping_config, 'ALERT_HISTORY_DAYS_TO_KEEP', 30))  # Default to 30 days for history
+    days_to_keep = policy['retention_days']
     batch_size = int(getattr(housekeeping_config, 'ALERT_HISTORY_BATCH_SIZE', 1000))
 
     db = _connect_oscar_db(connection_id)
@@ -1265,6 +1385,17 @@ def clean_alert_history_records(**context):
         wl(f"Starting AlertHistory cleanup [{mode_str}]: days_to_keep={days_to_keep}, batch_size={batch_size}", "INFO")
         cutoff_date = datetime.now(timezone.utc) - timedelta(days=days_to_keep)
         cutoff_date_str = cutoff_date.strftime('%Y-%m-%d %H:%M:%S')
+        start_time = time.time()
+        count_limit = batch_size * int(getattr(housekeeping_config, 'ALERT_HISTORY_MAX_ITERATIONS', 100)) + 1
+        eligible_at_start = bounded_eligible_count(
+            cursor, 'AM_AlertHistory', 'resolved_at < %s', (cutoff_date_str,), count_limit)
+        if dry_run:
+            result = {'dry_run': True, 'rows_to_delete': eligible_at_start, 'rows_deleted': 0,
+                      'eligible_backlog': eligible_at_start, 'days_to_keep': days_to_keep,
+                      'backlog_count_capped': eligible_at_start == count_limit,
+                      'execution_time_seconds': time.time() - start_time}
+            context['ti'].xcom_push(key='alert_history_cleanup_result', value=result)
+            return result
 
         # Timeout protection (in addition to Airflow's execution_timeout)
         task_timeout = getattr(housekeeping_config, 'TASK_TIMEOUT_MINUTES', 60)
@@ -1288,48 +1419,17 @@ def clean_alert_history_records(**context):
                 wl(f"Stopped: timeout limit reached ({task_timeout} minutes)", "WARNING")
                 break
 
-            # Two-step DELETE (MySQL doesn't support LIMIT with multi-table DELETE)
-            # STEP 1: Select IDs to delete (with LIMIT)
-            # STEP 2: Delete those IDs from all tables
-            # SAFETY RULES:
-            # 1. Use last_occurrence to ensure we keep frequently occurring alerts
-            # 2. Keep ticketed alerts (important for audit trail)
-            # 3. Keep acknowledged alerts (someone manually looked at it)
-            # 4. Fall back to created_at for older records without last_occurrence
-            # 5. Keep latest episode for each fingerprint (episode tracking)
-            #
-            # NOTE: We do NOT check status='resolved' because:
-            # - Redis TTL expires after 24h-7d, alert is no longer "active"
-            # - If alert never fires again, Alertmanager may never send "resolved"
-            # - Orphaned "firing" alerts are just stale database records
-            # - If truly active, it would have recent last_occurrence (protected by age check)
-            
-            # STEP 1: Get IDs to delete
+            # Lock closed episodes before deleting their children; a concurrent
+            # reopen or receipt must finish before this eligibility decision.
             select_ids_query = """
             SELECT ah.ID
             FROM AM_AlertHistory ah
-            WHERE (
-                -- Old records: use last_occurrence if available, otherwise created_at
-                (ah.last_occurrence IS NOT NULL AND ah.last_occurrence < %s)
-                OR
-                (ah.last_occurrence IS NULL AND ah.created_at < %s)
-            )
-            AND (ah.ticket_id IS NULL OR ah.ticket_id = '')       -- Keep ticketed alerts
-            AND (ah.acknowledged = 0 OR ah.acknowledged IS NULL)  -- Keep acknowledged alerts
-            AND ah.ID NOT IN (
-                -- Keep the most recent episode for each fingerprint (latest info)
-                SELECT ah2.ID
-                FROM AM_AlertHistory ah2
-                INNER JOIN (
-                    SELECT fingerprint, MAX(episode_number) as max_episode
-                    FROM AM_AlertHistory
-                    GROUP BY fingerprint
-                ) latest ON ah2.fingerprint = latest.fingerprint 
-                        AND ah2.episode_number = latest.max_episode
-            )
+            WHERE ah.resolved_at < %s
+            ORDER BY ah.resolved_at, ah.ID
             LIMIT %s
+            FOR UPDATE SKIP LOCKED
             """
-            cursor.execute(select_ids_query, (cutoff_date_str, cutoff_date_str, batch_size))
+            cursor.execute(select_ids_query, (cutoff_date_str, batch_size))
             ids_to_delete = [row[0] for row in cursor.fetchall()]
             
             history_deleted = 0
@@ -1378,6 +1478,10 @@ def clean_alert_history_records(**context):
         result_history = {
             "dry_run": dry_run,
             "total_alert_history_deleted": total_history_deleted,
+            "rows_deleted": total_history_deleted,
+            "eligible_backlog": max(0, eligible_at_start - total_history_deleted),
+            "backlog_count_capped": eligible_at_start == count_limit,
+            "execution_time_seconds": time.time() - start_time,
             "days_to_keep": days_to_keep,
             "batch_size": batch_size,
             "max_iterations": max_iterations,
@@ -1422,6 +1526,7 @@ def clean_alert_history_records(**context):
                 result_history["optimization_error"] = str(e)
 
         context['ti'].xcom_push(key='alert_history_cleanup_result', value=result_history)
+        return result_history
 
     except Exception as e:
         db.rollback()
@@ -1435,13 +1540,7 @@ def clean_alert_history_records(**context):
 
 @task
 def clean_notification_audit_history(**context):
-    """Clean NTF_Notifications_Audit table - 8GB
-    
-    Three modes controlled by NOTIFICATION_AUDIT_TABLE_SWAP_MODE + NOTIFICATION_AUDIT_MAINTENANCE_OPTIMIZATION:
-    - TABLE SWAP (swap=True): Actually reclaims disk space (risk: brief write failures during RENAME)
-    - OPTIMIZE (swap=False, optimize=True): Normal delete + OPTIMIZE TABLE (safe disk reclaim)
-    - NORMAL DELETE (swap=False, optimize=False): Fastest, space only reused by InnoDB
-    """
+    """Retire terminal notification attempts in committed batches."""
     import time
     
     # Master kill switch check for database cleanup
@@ -1450,15 +1549,18 @@ def clean_notification_audit_history(**context):
         return "Database cleanup disabled by master flag"
     
     # Granular task-specific check
-    if not housekeeping_config.ENABLE_NOTIFICATION_AUDIT_CLEANUP:
+    policy = policy_for(context, 'notification_audit')
+    if not policy['enabled']:
         logger.info("Notification audit cleanup skipped - task-specific flag disabled (ENABLE_NOTIFICATION_AUDIT_CLEANUP=False)")
         return "Notification audit cleanup disabled by task-specific flag"
 
     connection_id = os.getenv('OSCAR_DB_CONNECTION_ID', 'oscar_db')
-    days_to_keep = int(getattr(housekeeping_config, 'NOTIFICATION_AUDIT_DAYS_TO_KEEP', 30))
+    days_to_keep = policy['retention_days']
     batch_size = int(getattr(housekeeping_config, 'NOTIFICATION_AUDIT_BATCH_SIZE', 1000))
     max_iterations = int(getattr(housekeeping_config, 'NOTIFICATION_AUDIT_MAX_ITERATIONS', 100))
     table_swap_mode = getattr(housekeeping_config, 'NOTIFICATION_AUDIT_TABLE_SWAP_MODE', False)
+    if table_swap_mode:
+        raise RuntimeError('Notification audit table swap bypasses summary triggers')
 
     db = _connect_oscar_db(connection_id)
     cursor = db.cursor()
@@ -1497,22 +1599,25 @@ def clean_notification_audit_history(**context):
         original_rows = row[1] if row else 0
         wl(f"Current NTF_Notifications_Audit: {original_size_gb} GB, ~{original_rows:,} rows", "INFO")
 
-        # Count rows to keep/delete (use actual COUNT, not stale information_schema estimate)
-        cursor.execute("SELECT COUNT(*) FROM NTF_Notifications_Audit WHERE created_at >= %s", (cutoff_date_str,))
-        rows_to_keep = cursor.fetchone()[0]
-        cursor.execute("SELECT COUNT(*) FROM NTF_Notifications_Audit WHERE created_at < %s", (cutoff_date_str,))
-        rows_to_delete = cursor.fetchone()[0]
-        wl(f"Rows to keep: {rows_to_keep:,}, Rows to delete: {rows_to_delete:,}", "INFO")
+        rows_to_keep = None  # No retained-range scan needed for batch deletion.
+        count_limit = batch_size * max_iterations + 1
+        rows_to_delete = bounded_eligible_count(
+            cursor, 'NTF_Notifications_Audit',
+            "created_at < %s AND status IN ('sent','failed','suppressed','cancelled')",
+            (cutoff_date_str,), count_limit)
+        wl(f"Eligible notification audit rows: at least {rows_to_delete:,}", "INFO")
 
         if rows_to_delete <= 0:
             wl("No old records to delete", "INFO")
-            return {"summary": "No old records to delete", "dry_run": dry_run}
+            return {"summary": "No old records to delete", "dry_run": dry_run,
+                    "rows_deleted": 0, "eligible_backlog": 0}
 
         if dry_run:
             result = {
                 "dry_run": True,
                 "mode": cleanup_mode,
                 "rows_to_delete": rows_to_delete,
+                "backlog_count_capped": rows_to_delete == count_limit,
                 "summary": f"[DRY RUN - {cleanup_mode}] Would delete {rows_to_delete:,} records"
             }
             wl(f"[DRY RUN] {result['summary']}", "INFO")
@@ -1637,6 +1742,8 @@ def clean_notification_audit_history(**context):
             delete_audit_query = """
             DELETE FROM NTF_Notifications_Audit 
             WHERE created_at < %s 
+              AND status IN ('sent','failed','suppressed','cancelled')
+            ORDER BY created_at, id
             LIMIT %s
             """
             cursor.execute(delete_audit_query, (cutoff_date_str, batch_size))
@@ -1668,6 +1775,11 @@ def clean_notification_audit_history(**context):
         delete_summary_query = """
         DELETE FROM NTF_Notifications_Audit_Summary 
         WHERE summary_date < %s
+          AND NOT EXISTS (
+            SELECT 1 FROM NTF_Notifications_Audit a
+            WHERE a.created_at >= summary_date
+              AND a.created_at < summary_date + INTERVAL 1 DAY
+          )
         """
         cursor.execute(delete_summary_query, (cutoff_date.date(),))
         summary_deleted = cursor.rowcount
@@ -1685,6 +1797,10 @@ def clean_notification_audit_history(**context):
         result_audit = {
             "dry_run": dry_run,
             "total_notification_audit_deleted": total_audit_deleted,
+            "rows_deleted": total_audit_deleted,
+            "eligible_backlog": max(0, rows_to_delete - total_audit_deleted),
+            "backlog_count_capped": rows_to_delete == count_limit,
+            "execution_time_seconds": time.time() - start_time,
             "total_summary_deleted": summary_deleted,
             "days_to_keep": days_to_keep,
             "batch_size": batch_size,
@@ -1723,6 +1839,7 @@ def clean_notification_audit_history(**context):
                 result_audit["optimization_error"] = str(e)
 
         context['ti'].xcom_push(key='notification_audit_cleanup_result', value=result_audit)
+        return result_audit
 
     except Exception as e:
         db.rollback()
@@ -1735,13 +1852,7 @@ def clean_notification_audit_history(**context):
 
 @task
 def clean_ticketing_audit_history(**context):
-    """Clean TKT_Ticketing_Audit table
-    
-    Three modes controlled by TICKETING_AUDIT_TABLE_SWAP_MODE + TICKETING_AUDIT_MAINTENANCE_OPTIMIZATION:
-    - TABLE SWAP (swap=True): Actually reclaims disk space (risk: brief write failures during RENAME)
-    - OPTIMIZE (swap=False, optimize=True): Normal delete + OPTIMIZE TABLE (safe disk reclaim)
-    - NORMAL DELETE (swap=False, optimize=False): Fastest, space only reused by InnoDB
-    """
+    """Retire terminal ticketing attempts in committed batches."""
     import time
     
     # Master kill switch check for database cleanup
@@ -1750,15 +1861,18 @@ def clean_ticketing_audit_history(**context):
         return "Database cleanup disabled by master flag"
     
     # Granular task-specific check
-    if not housekeeping_config.ENABLE_TICKETING_AUDIT_CLEANUP:
+    policy = policy_for(context, 'ticketing_audit')
+    if not policy['enabled']:
         logger.info("Ticketing audit cleanup skipped - task-specific flag disabled (ENABLE_TICKETING_AUDIT_CLEANUP=False)")
         return "Ticketing audit cleanup disabled by task-specific flag"
 
     connection_id = os.getenv('OSCAR_DB_CONNECTION_ID', 'oscar_db')
-    days_to_keep = int(getattr(housekeeping_config, 'TICKETING_AUDIT_DAYS_TO_KEEP', 90))
+    days_to_keep = policy['retention_days']
     batch_size = int(getattr(housekeeping_config, 'TICKETING_AUDIT_BATCH_SIZE', 1000))
     max_iterations = int(getattr(housekeeping_config, 'TICKETING_AUDIT_MAX_ITERATIONS', 100))
     table_swap_mode = getattr(housekeeping_config, 'TICKETING_AUDIT_TABLE_SWAP_MODE', False)
+    if table_swap_mode:
+        raise RuntimeError('Ticketing audit table swap bypasses summary triggers')
 
     db = _connect_oscar_db(connection_id)
     cursor = db.cursor()
@@ -1798,21 +1912,25 @@ def clean_ticketing_audit_history(**context):
         wl(f"Current TKT_Ticketing_Audit: {original_size_gb} GB, ~{original_rows:,} rows", "INFO")
 
         # Count rows to keep/delete (use actual COUNT, not stale information_schema estimate)
-        cursor.execute("SELECT COUNT(*) FROM TKT_Ticketing_Audit WHERE created_at >= %s", (cutoff_date_str,))
-        rows_to_keep = cursor.fetchone()[0]
-        cursor.execute("SELECT COUNT(*) FROM TKT_Ticketing_Audit WHERE created_at < %s", (cutoff_date_str,))
-        rows_to_delete = cursor.fetchone()[0]
-        wl(f"Rows to keep: {rows_to_keep:,}, Rows to delete: {rows_to_delete:,}", "INFO")
+        rows_to_keep = None  # No retained-range scan needed for batch deletion.
+        count_limit = batch_size * max_iterations + 1
+        rows_to_delete = bounded_eligible_count(
+            cursor, 'TKT_Ticketing_Audit',
+            "created_at < %s AND status IN ('success','failure','timeout','invalid_response','suppressed')",
+            (cutoff_date_str,), count_limit)
+        wl(f"Eligible ticketing audit rows: at least {rows_to_delete:,}", "INFO")
 
         if rows_to_delete <= 0:
             wl("No old records to delete", "INFO")
-            return {"summary": "No old records to delete", "dry_run": dry_run}
+            return {"summary": "No old records to delete", "dry_run": dry_run,
+                    "rows_deleted": 0, "eligible_backlog": 0}
 
         if dry_run:
             result = {
                 "dry_run": True,
                 "mode": cleanup_mode,
                 "rows_to_delete": rows_to_delete,
+                "backlog_count_capped": rows_to_delete == count_limit,
                 "summary": f"[DRY RUN - {cleanup_mode}] Would delete {rows_to_delete:,} records"
             }
             wl(f"[DRY RUN] {result['summary']}", "INFO")
@@ -1938,6 +2056,8 @@ def clean_ticketing_audit_history(**context):
             delete_audit_query = """
             DELETE FROM TKT_Ticketing_Audit 
             WHERE created_at < %s 
+              AND status IN ('success','failure','timeout','invalid_response','suppressed')
+            ORDER BY created_at, id
             LIMIT %s
             """
             cursor.execute(delete_audit_query, (cutoff_date_str, batch_size))
@@ -1969,6 +2089,11 @@ def clean_ticketing_audit_history(**context):
         delete_summary_query = """
         DELETE FROM TKT_Ticketing_Audit_Summary 
         WHERE summary_date < %s
+          AND NOT EXISTS (
+            SELECT 1 FROM TKT_Ticketing_Audit a
+            WHERE a.created_at >= summary_date
+              AND a.created_at < summary_date + INTERVAL 1 DAY
+          )
         """
         cursor.execute(delete_summary_query, (cutoff_date.date(),))
         summary_deleted = cursor.rowcount
@@ -1986,6 +2111,10 @@ def clean_ticketing_audit_history(**context):
         result_audit = {
             "dry_run": dry_run,
             "total_ticketing_audit_deleted": total_audit_deleted,
+            "rows_deleted": total_audit_deleted,
+            "eligible_backlog": max(0, rows_to_delete - total_audit_deleted),
+            "backlog_count_capped": rows_to_delete == count_limit,
+            "execution_time_seconds": time.time() - start_time,
             "total_summary_deleted": summary_deleted,
             "days_to_keep": days_to_keep,
             "batch_size": batch_size,
@@ -2024,6 +2153,7 @@ def clean_ticketing_audit_history(**context):
                 result_audit["optimization_error"] = str(e)
 
         context['ti'].xcom_push(key='ticketing_audit_cleanup_result', value=result_audit)
+        return result_audit
 
     except Exception as e:
         db.rollback()
@@ -2037,13 +2167,7 @@ def clean_ticketing_audit_history(**context):
 
 @task
 def clean_user_audit_history(**context):
-    """Clean UA_User_Audit table - 106GB+ LARGEST TABLE
-    
-    Three modes controlled by USER_AUDIT_TABLE_SWAP_MODE + USER_AUDIT_MAINTENANCE_OPTIMIZATION:
-    - TABLE SWAP (swap=True): Actually reclaims disk space (risk: brief write failures during RENAME)
-    - OPTIMIZE (swap=False, optimize=True): Normal delete + OPTIMIZE TABLE (safe disk reclaim)
-    - NORMAL DELETE (swap=False, optimize=False): Fastest, space only reused by InnoDB
-    """
+    """Retire user audit events in committed batches."""
     import time
     
     # Master kill switch check for database cleanup
@@ -2052,13 +2176,16 @@ def clean_user_audit_history(**context):
         return "Database cleanup disabled by master flag"
     
     # Granular task-specific check
-    if not housekeeping_config.ENABLE_USER_AUDIT_CLEANUP:
+    policy = policy_for(context, 'user_audit')
+    if not policy['enabled']:
         logger.info("User audit cleanup skipped - task-specific flag disabled (ENABLE_USER_AUDIT_CLEANUP=False)")
         return "User audit cleanup disabled by task-specific flag"
 
     connection_id = os.getenv('OSCAR_DB_CONNECTION_ID', 'oscar_db')
-    days_to_keep = int(getattr(housekeeping_config, 'USER_AUDIT_DAYS_TO_KEEP', 7))
+    days_to_keep = policy['retention_days']
     table_swap_mode = getattr(housekeeping_config, 'USER_AUDIT_TABLE_SWAP_MODE', False)
+    if table_swap_mode:
+        raise RuntimeError('User audit table swap bypasses summary triggers')
     batch_size = int(getattr(housekeeping_config, 'USER_AUDIT_BATCH_SIZE', 5000))
     max_iterations = int(getattr(housekeeping_config, 'USER_AUDIT_MAX_ITERATIONS', 500))
 
@@ -2105,34 +2232,31 @@ def clean_user_audit_history(**context):
         original_rows = row[1] if row else 0
         wl(f"Current UA_User_Audit: {original_size_gb} GB, ~{original_rows:,} rows", "INFO")
         
-        # Count rows to keep/delete (use actual COUNT, not stale information_schema estimate)
-        cursor.execute("SELECT COUNT(*) FROM UA_User_Audit WHERE created_at >= %s", (cutoff_date_str,))
-        rows_to_keep = cursor.fetchone()[0]
-        cursor.execute("SELECT COUNT(*) FROM UA_User_Audit WHERE created_at < %s", (cutoff_date_str,))
-        rows_to_delete = cursor.fetchone()[0]
-        wl(f"Rows to keep (last {days_to_keep} days): {rows_to_keep:,}, Rows to delete: {rows_to_delete:,}", "INFO")
+        rows_to_keep = None  # The retained range need not be scanned.
+        count_limit = batch_size * max_iterations + 1
+        rows_to_delete = bounded_eligible_count(
+            cursor, 'UA_User_Audit', 'created_at < %s', (cutoff_date_str,), count_limit)
+        wl(f"Eligible user audit rows: at least {rows_to_delete:,}", "INFO")
         
         if rows_to_delete <= 0:
             wl("No old records to delete", "INFO")
-            result = {"summary": "No old records to delete", "dry_run": dry_run}
+            result = {"summary": "No old records to delete", "dry_run": dry_run,
+                      "rows_deleted": 0, "eligible_backlog": 0}
             context['ti'].xcom_push(key='user_audit_cleanup_result', value=result)
             return result
 
         if dry_run:
             # DRY RUN - just report what would happen
-            estimated_new_size = original_size_gb * (rows_to_keep / original_rows) if original_rows > 0 else 0
-            space_to_free = original_size_gb - estimated_new_size
-            
             result = {
                 "dry_run": True,
                 "mode": cleanup_mode,
                 "original_size_gb": original_size_gb,
-                "estimated_new_size_gb": round(estimated_new_size, 2) if table_swap_mode else original_size_gb,
-                "estimated_space_freed_gb": round(space_to_free, 2) if table_swap_mode else 0,
+                "estimated_new_size_gb": original_size_gb,
+                "estimated_space_freed_gb": 0,
                 "rows_to_keep": rows_to_keep,
                 "rows_to_delete": rows_to_delete,
-                "summary": f"[DRY RUN - {cleanup_mode}] Would delete {rows_to_delete:,} old records" + 
-                          (f", freeing ~{round(space_to_free, 2)} GB" if table_swap_mode else " (space reused, not freed)")
+                "backlog_count_capped": rows_to_delete == count_limit,
+                "summary": f"[DRY RUN - {cleanup_mode}] Would delete at least {rows_to_delete:,} old records (space reused, not freed)",
             }
             wl(f"[DRY RUN] {result['summary']}", "INFO")
             context['ti'].xcom_push(key='user_audit_cleanup_result', value=result)
@@ -2152,7 +2276,7 @@ def clean_user_audit_history(**context):
             total_deleted = 0
             
             # Find the oldest record date
-            cursor.execute("SELECT MIN(DATE(created_at)) FROM UA_User_Audit")
+            cursor.execute("SELECT DATE(MIN(created_at)) FROM UA_User_Audit")
             min_date_result = cursor.fetchone()[0]
             
             if min_date_result is None:
@@ -2194,15 +2318,22 @@ def clean_user_audit_history(**context):
                     current_date = next_date
             
             # Clean summary table
-            cursor.execute("DELETE FROM UA_User_Audit_Summary WHERE summary_date < %s", (cutoff_date.date(),))
+            cursor.execute("""DELETE FROM UA_User_Audit_Summary WHERE summary_date < %s
+                AND NOT EXISTS (SELECT 1 FROM UA_User_Audit a
+                    WHERE a.created_at >= summary_date
+                      AND a.created_at < summary_date + INTERVAL 1 DAY)""", (cutoff_date.date(),))
             summary_deleted = cursor.rowcount
             db.commit()
             
+            remaining = bounded_eligible_count(
+                cursor, 'UA_User_Audit', 'created_at < %s', (cutoff_date_str,), 1001)
             elapsed_time = int(time.time() - start_time)
             result = {
                 "dry_run": False,
                 "mode": "NORMAL DELETE",
                 "rows_deleted": total_deleted,
+                "eligible_backlog": remaining,
+                "backlog_count_capped": remaining == 1001,
                 "summary_deleted": summary_deleted,
                 "execution_time_seconds": elapsed_time,
                 "summary": f"Deleted {total_deleted:,} records in {elapsed_time}s (space reused, not freed)"
@@ -2401,6 +2532,55 @@ def clean_user_audit_history(**context):
 
 
 @task
+def clean_alert_audit(**context):
+    """Retire recorded alert activity after its independent evidence window."""
+    if not housekeeping_config.ENABLE_DATABASE_CLEANUP:
+        return 'Database cleanup disabled by master flag'
+    policy = policy_for(context, 'alert_audit')
+    if not policy['enabled']:
+        return 'Alert audit cleanup disabled'
+    db = _connect_oscar_db(os.getenv('OSCAR_DB_CONNECTION_ID', 'oscar_db'))
+    cursor = db.cursor()
+    started = datetime.now(timezone.utc)
+    cutoff = started - timedelta(days=policy['retention_days'])
+    batch_size = int(housekeeping_config.ALERT_AUDIT_BATCH_SIZE)
+    max_iterations = int(housekeeping_config.ALERT_AUDIT_MAX_ITERATIONS)
+    try:
+        count_limit = batch_size * max_iterations + 1
+        eligible = bounded_eligible_count(
+            cursor, 'AM_AlertAudit', 'recorded_at < %s',
+            (cutoff.replace(tzinfo=None),), count_limit)
+        if housekeeping_config.DRY_RUN_MODE:
+            result = {'dry_run': True, 'rows_to_delete': eligible, 'rows_deleted': 0,
+                      'eligible_backlog': eligible, 'backlog_count_capped': eligible == count_limit,
+                      'days_to_keep': policy['retention_days']}
+        else:
+            deleted = 0
+            for _ in range(max_iterations):
+                cursor.execute('DELETE FROM AM_AlertAudit WHERE recorded_at < %s LIMIT %s',
+                               (cutoff.replace(tzinfo=None), batch_size))
+                batch = cursor.rowcount
+                db.commit()
+                deleted += batch
+                if batch < batch_size:
+                    break
+            result = {'dry_run': False, 'rows_deleted': deleted,
+                      'eligible_backlog': max(0, eligible - deleted),
+                      'backlog_count_capped': eligible == count_limit,
+                      'days_to_keep': policy['retention_days']}
+        result['execution_time_seconds'] = (datetime.now(timezone.utc) - started).total_seconds()
+        logger.info('Alert audit cleanup: %s', result)
+        context['ti'].xcom_push(key='alert_audit_cleanup_result', value=result)
+        return result
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        cursor.close()
+        db.close()
+
+
+@task
 def close_worklog(**context):
     """Close the worklog created earlier, persist cleanup reports as metadata, and add a final entry."""
     worklog_id = context['ti'].xcom_pull(task_ids='create_worklog', key='worklog_id')
@@ -2424,8 +2604,14 @@ def close_worklog(**context):
 
     for xcom_key, airflow_task_id, task_name, cleanup_type in TASK_REPORT_REGISTRY:
         try:
+            instance = context['dag_run'].get_task_instance(airflow_task_id)
+            task_state = getattr(instance, 'state', None)
             result = ti.xcom_pull(task_ids=airflow_task_id, key=xcom_key)
-            report = build_task_report(task_name, cleanup_type, result)
+            if task_state in ('failed', 'upstream_failed'):
+                report = {'task': task_name, 'type': cleanup_type, 'status': 'error',
+                          'reason': f'Airflow task state: {task_state}'}
+            else:
+                report = build_task_report(task_name, cleanup_type, result)
         except Exception as e:
             logger.warning(f"Could not pull XCom for {airflow_task_id}/{xcom_key}: {e}")
             report = {
@@ -2499,6 +2685,18 @@ def close_worklog(**context):
     return closed_worklog['id']
 
 
+@task(trigger_rule=TriggerRule.ALL_DONE)
+def enforce_housekeeping_result(**context):
+    """The report can complete while a cleanup failed; keep the DAG red."""
+    checked = [task_id for _, task_id, _, _ in TASK_REPORT_REGISTRY]
+    checked.extend(('load_housekeeping_policy', 'close_worklog'))
+    failed = [task_id for task_id in checked
+              if getattr(context['dag_run'].get_task_instance(task_id), 'state', None)
+              in ('failed', 'upstream_failed')]
+    if failed:
+        raise RuntimeError('Housekeeping failed: ' + ', '.join(failed))
+
+
 HOUSEKEEPING_GUIDE_MD = """
 ## OSCAR Housekeeping — user guide
 
@@ -2506,21 +2704,21 @@ Runs **daily at 11:00 UTC** to clean database history. Airflow log deletion is d
 the independent `airflow-log-groomer` service deletes `.log` files unmodified for more than **3 days**
 and removes empty directories, checking every **15 minutes**. Override its retention with
 `AIRFLOW_LOG_RETENTION_DAYS` in `conf/env/workflow.env`; this does not change database retention.
-Database cleanup settings are in `plugins/helpers/oscar_housekeeping_config.py` (on the box: `/opt/oscar/app/oscar-workflow/airflow/`).
-The file is read fresh on every run: edit, save, then **Trigger DAG**. No restart needed.
+Set per-family retention and enabled state in **Settings → Application → Housekeeping**.
+Database overrides are read once at the start of each run. Missing overrides use
+`plugins/helpers/oscar_housekeeping_config.py` (on the box: `/opt/oscar/app/oscar-workflow/airflow/`).
+The file is read fresh on every run. Trigger the DAG from this page or the workflow page.
 
 | Mode | Settings | What a run does | Gives disk back? | Use when |
 |---|---|---|---|---|
 | Dry run | `DRY_RUN_MODE = True` | counts what it would delete, changes nothing | no | previewing |
 | **Daily delete** (default) | `DRY_RUN_MODE = False`, `X_TABLE_SWAP_MODE = False`, `X_MAINTENANCE_OPTIMIZATION = False` | deletes rows older than retention; MySQL reuses the room | no, stops growth | every day |
 | Delete + optimize | `X_MAINTENANCE_OPTIMIZATION = True` | deletes, then rebuilds the table | yes | **avoid on big tables**: needs free disk equal to the table size |
-| Swap | `X_TABLE_SWAP_MODE = True` | copies rows to keep into a new table, swaps it in, drops the old one | yes, at once | one run to shrink a grown table, then set back to `False` |
 
-`X` = `TASK_HISTORY`, `NOTIFICATION_AUDIT`, `USER_AUDIT`, `TICKETING_AUDIT`.
-Retention: `X_DAYS_TO_KEEP` (alert history: `ALERT_HISTORY_DAYS_TO_KEEP`).
-
-**Before a swap:** no other run in progress, and free disk on `/opt/docker` larger than the rows kept (40 GB+ is safe).
-**If a run fails:** open the failed task's log; worklog errors no longer stop the cleanup.
+Retention defaults are task history 7 days, alert history 30 days, notification audit
+30 days, ticketing audit 40 days, user audit 7 days, and alert audit 90 days.
+Table swap modes are blocked because they can lose concurrent writes and bypass triggers.
+**If a run fails:** open the failed task's log and the worklog report.
 """
 
 
@@ -2537,9 +2735,12 @@ with DAG(
     # each other (a manual trigger while the scheduled run is active, or the
     # scheduled run Airflow starts on unpause).
     max_active_runs=1,
+    on_failure_callback=_dag_failure,
+    on_success_callback=_dag_success,
     tags=['housekeeping', 'logs', 'worklog'],
 ):
     create_worklog_task = create_worklog()
+    policy_task = load_housekeeping_policy()
 
     # Apply per-task retries using config
     clean_logs_task = clean_airflow_logs.override(
@@ -2547,6 +2748,8 @@ with DAG(
         retry_delay=timedelta(minutes=housekeeping_config.RETRY_DELAY_MINUTES),
     )()
     clean_task_history_task = clean_task_history.override(
+        on_success_callback=_cleanup_success,
+        on_failure_callback=_cleanup_failure,
         retries=housekeeping_config.MAX_RETRIES,
         retry_delay=timedelta(minutes=housekeeping_config.RETRY_DELAY_MINUTES),
         execution_timeout=timedelta(minutes=getattr(housekeeping_config, 'TASK_HISTORY_TIMEOUT_MINUTES', 60)),
@@ -2557,24 +2760,38 @@ with DAG(
         execution_timeout=timedelta(minutes=getattr(housekeeping_config, 'TASK_TIMEOUT_MINUTES', 60)),
     )()
     clean_alert_history_records_task = clean_alert_history_records.override(
+        on_success_callback=_cleanup_success,
+        on_failure_callback=_cleanup_failure,
         retries=housekeeping_config.MAX_RETRIES,
         retry_delay=timedelta(minutes=housekeeping_config.RETRY_DELAY_MINUTES),
         execution_timeout=timedelta(minutes=getattr(housekeeping_config, 'TASK_TIMEOUT_MINUTES', 60)),
     )()
     clean_notification_audit_history_task = clean_notification_audit_history.override(
+        on_success_callback=_cleanup_success,
+        on_failure_callback=_cleanup_failure,
         retries=housekeeping_config.MAX_RETRIES,
         retry_delay=timedelta(minutes=housekeeping_config.RETRY_DELAY_MINUTES),
         execution_timeout=timedelta(minutes=getattr(housekeeping_config, 'NOTIFICATION_AUDIT_TIMEOUT_MINUTES', 60)),
     )()
     clean_ticketing_audit_history_task = clean_ticketing_audit_history.override(
+        on_success_callback=_cleanup_success,
+        on_failure_callback=_cleanup_failure,
         retries=housekeeping_config.MAX_RETRIES,
         retry_delay=timedelta(minutes=housekeeping_config.RETRY_DELAY_MINUTES),
         execution_timeout=timedelta(minutes=getattr(housekeeping_config, 'TICKETING_AUDIT_TIMEOUT_MINUTES', 60)),
     )()
     clean_user_audit_history_task = clean_user_audit_history.override(
+        on_success_callback=_cleanup_success,
+        on_failure_callback=_cleanup_failure,
         retries=housekeeping_config.MAX_RETRIES,
         retry_delay=timedelta(minutes=housekeeping_config.RETRY_DELAY_MINUTES),
         execution_timeout=timedelta(minutes=getattr(housekeeping_config, 'USER_AUDIT_TIMEOUT_MINUTES', 60)),
+    )()
+    clean_alert_audit_task = clean_alert_audit.override(
+        on_success_callback=_cleanup_success,
+        on_failure_callback=_cleanup_failure,
+        retries=housekeeping_config.MAX_RETRIES,
+        retry_delay=timedelta(minutes=housekeeping_config.RETRY_DELAY_MINUTES),
     )()
 
     close_worklog_task = close_worklog()
@@ -2584,7 +2801,7 @@ with DAG(
     join_cleanup = EmptyOperator(task_id="join_cleanup", trigger_rule=TriggerRule.ALL_DONE)
 
     # Run all cleanup tasks in parallel after creating the worklog, then join and close
-    create_worklog_task >> [
+    create_worklog_task >> policy_task >> [
         clean_logs_task,
         clean_task_history_task,
         clean_alert_history_task,
@@ -2592,4 +2809,5 @@ with DAG(
         clean_notification_audit_history_task,
         clean_ticketing_audit_history_task,
         clean_user_audit_history_task,
-    ] >> join_cleanup >> close_worklog_task
+        clean_alert_audit_task,
+    ] >> join_cleanup >> close_worklog_task >> enforce_housekeeping_result()

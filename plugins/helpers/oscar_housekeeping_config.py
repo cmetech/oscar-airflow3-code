@@ -22,7 +22,7 @@ ENABLE_DATABASE_CLEANUP = True
 # When True: Queries run but NO commits (shows what WOULD be deleted)
 # When False: Normal operation (actually deletes data)
 # ⚠️ IMPORTANT: Test with True first, verify results, then set to False
-DRY_RUN_MODE = False  # ✅ LIVE MODE - DAG deletes + optimizes for real every run
+DRY_RUN_MODE = False  # LIVE MODE - the DAG commits bounded deletes
 
 # ============================================================================
 # GRANULAR TASK-SPECIFIC FLAGS - Individual Task Control
@@ -365,8 +365,8 @@ OSCAR_DB_CONNECTION_ID = 'oscar_db'    # Database connection ID
 TASK_HISTORY_DAYS_TO_KEEP = 7
 TASK_HISTORY_BATCH_SIZE = 2000          # ~230K rows/day × 7 days = 1.6M rows max; 2000×400 = 800K capacity per run
 TASK_HISTORY_MAX_ITERATIONS = 600      # 2000×600=1.2M capacity; clears 242K backlog + daily 230K growth
-TASK_HISTORY_TABLE_SWAP_MODE = False  # Set True only for emergency disk reclaim
-TASK_HISTORY_MAINTENANCE_OPTIMIZATION = False  # OFF: OPTIMIZE rebuilds the table and needs free disk equal to its size; daily delete + InnoDB space reuse keeps it flat. Use *_TABLE_SWAP_MODE=True once to reclaim a backlog.
+TASK_HISTORY_TABLE_SWAP_MODE = False  # Unsupported: the DAG rejects table swaps
+TASK_HISTORY_MAINTENANCE_OPTIMIZATION = False  # OPTIMIZE rebuilds the table and needs substantial free disk
 
 # Alert Cleanup Settings (AM_Alert) - ⚠️ LEGACY ⚠️
 # These tables (AM_Alert, AM_AlertGroup, etc.) are no longer used in current architecture.
@@ -378,28 +378,25 @@ ALERTS_MAX_ITERATIONS = 100
 ALERTS_MAINTENANCE_OPTIMIZATION = False  # Run OPTIMIZE TABLE after delete (reclaims disk space safely)
 
 # Alert History Cleanup Settings (AM_AlertHistory)
-# IMPORTANT: This cleanup is CONSERVATIVE and preserves critical data:
-# - Keeps ALL alerts with ticket_id (audit trail)
-# - Keeps ALL acknowledged alerts (manual review happened)
-# - Keeps the LATEST episode for each fingerprint (most recent occurrence)
-# - Only deletes: old, unticketed, unacknowledged, non-latest episodes
-#
-# NOTE: We do NOT filter by status='resolved' because:
-# - After Redis TTL expires (24h-7d), alerts are no longer actively tracked
-# - Alertmanager may never send "resolved" for one-shot or deleted alerts
-# - Truly active alerts will have recent last_occurrence (protected by age check)
-# - Orphaned "firing" status alerts are just stale database records
-ALERT_HISTORY_DAYS_TO_KEEP = 20
+# Only episodes with resolved_at before the cutoff are eligible. Open or
+# unresolved episodes remain even if their first occurrence is old.
+ALERT_HISTORY_DAYS_TO_KEEP = 30
 ALERT_HISTORY_BATCH_SIZE = 1000
 ALERT_HISTORY_MAX_ITERATIONS = 100
 ALERT_HISTORY_MAINTENANCE_OPTIMIZATION = False  # Run OPTIMIZE TABLE after delete (reclaims disk space safely)
+
+# Alert activity audit is evidence separate from the mutable alert episode.
+ENABLE_ALERT_AUDIT_CLEANUP = True
+ALERT_AUDIT_DAYS_TO_KEEP = 90
+ALERT_AUDIT_BATCH_SIZE = 1000
+ALERT_AUDIT_MAX_ITERATIONS = 100
 
 # Notification Audit Cleanup Settings (NTF_Notifications_Audit) - 8GB
 NOTIFICATION_AUDIT_DAYS_TO_KEEP = 30
 NOTIFICATION_AUDIT_BATCH_SIZE = 2000   # ~100K rows/day; 2000×200 = 400K capacity per run
 NOTIFICATION_AUDIT_MAX_ITERATIONS = 200  # Must handle 100K+ rows/day of notification audit data
-NOTIFICATION_AUDIT_TABLE_SWAP_MODE = False  # Set True only for emergency disk reclaim
-NOTIFICATION_AUDIT_MAINTENANCE_OPTIMIZATION = False  # OFF: OPTIMIZE rebuilds the table and needs free disk equal to its size; daily delete + InnoDB space reuse keeps it flat. Use *_TABLE_SWAP_MODE=True once to reclaim a backlog.
+NOTIFICATION_AUDIT_TABLE_SWAP_MODE = False  # Unsupported: the DAG rejects table swaps
+NOTIFICATION_AUDIT_MAINTENANCE_OPTIMIZATION = False  # OPTIMIZE rebuilds the table and needs substantial free disk
 
 # Ticketing Audit Cleanup Settings (TKT_Ticketing_Audit)
 # Tracks all ticket creation, updates, and failures for audit and compliance
@@ -407,8 +404,8 @@ NOTIFICATION_AUDIT_MAINTENANCE_OPTIMIZATION = False  # OFF: OPTIMIZE rebuilds th
 TICKETING_AUDIT_DAYS_TO_KEEP = 40  # 40 days for compliance/audit requirements
 TICKETING_AUDIT_BATCH_SIZE = 1000      # ~80 rows/day; tiny table, default batch is fine
 TICKETING_AUDIT_MAX_ITERATIONS = 100   # More than enough for ~80 rows/day
-TICKETING_AUDIT_TABLE_SWAP_MODE = False  # Regular maintenance mode (no disk reclaim)
-TICKETING_AUDIT_MAINTENANCE_OPTIMIZATION = False  # OFF: OPTIMIZE rebuilds the table and needs free disk equal to its size; daily delete + InnoDB space reuse keeps it flat. Use *_TABLE_SWAP_MODE=True once to reclaim a backlog.
+TICKETING_AUDIT_TABLE_SWAP_MODE = False  # Unsupported: the DAG rejects table swaps
+TICKETING_AUDIT_MAINTENANCE_OPTIMIZATION = False  # OPTIMIZE rebuilds the table and needs substantial free disk
 
 # User Audit Cleanup Settings (UA_User_Audit) - LARGEST TABLE
 # Tracks all user actions: login, logout, create, read, update, delete, navigate
@@ -417,38 +414,17 @@ TICKETING_AUDIT_MAINTENANCE_OPTIMIZATION = False  # OFF: OPTIMIZE rebuilds the t
 USER_AUDIT_DAYS_TO_KEEP = 7  # Aggressive cleanup - table grows fast
 USER_AUDIT_BATCH_SIZE = 5000  # Larger batches for faster cleanup
 USER_AUDIT_MAX_ITERATIONS = 500  # More iterations needed due to table size
-USER_AUDIT_TABLE_SWAP_MODE = False  # Set True only for emergency disk reclaim
-USER_AUDIT_MAINTENANCE_OPTIMIZATION = False  # OFF: OPTIMIZE rebuilds the table and needs free disk equal to its size; daily delete + InnoDB space reuse keeps it flat. Use *_TABLE_SWAP_MODE=True once to reclaim a backlog.
+USER_AUDIT_TABLE_SWAP_MODE = False  # Unsupported: the DAG rejects table swaps
+USER_AUDIT_MAINTENANCE_OPTIMIZATION = False  # OPTIMIZE rebuilds the table and needs substantial free disk
 
 # ============================================================================
-# TABLE SWAP MODE & MAINTENANCE OPTIMIZATION EXPLANATION
+# MAINTENANCE OPTIMIZATION
 # ============================================================================
-# Each table has TWO independent flags:
-#
-# *_TABLE_SWAP_MODE (bool):
-#   False (DEFAULT) = Normal DELETE (batch delete old rows)
-#         Fast with proper indexes, no risk, space reused by InnoDB.
-#         Use for daily maintenance - prevents table growth.
-#   True  = Table swap (CREATE new → COPY recent → RENAME → DROP old)
-#         Actually reclaims disk space to OS. Use ONLY for emergency cleanup.
-#         Risk: ~10-100ms window where writes may fail during RENAME.
-#
-# *_MAINTENANCE_OPTIMIZATION (bool):
-#   False (DEFAULT) = No post-delete optimization
-#   True  = Run OPTIMIZE TABLE after normal delete mode
-#         Rebuilds table and reclaims disk space safely (no write failures)
-#         Slower than plain delete but faster than table swap
-#         NOTE: Only applies to NORMAL DELETE mode (swap already reclaims space)
-#
-# MODES SUMMARY:
-#   swap=False, optimize=False → Fastest, space reused internally by InnoDB
-#   swap=False, optimize=True  → Normal delete + OPTIMIZE TABLE (safe disk reclaim)
-#   swap=True                  → Table swap (emergency disk reclaim, brief risk)
-#
-# RECOMMENDED WORKFLOW:
-# 1. Daily maintenance: swap=False, optimize=False (default)
-# 2. Scheduled maintenance window: swap=False, optimize=True (safe reclaim)
-# 3. Emergency only: swap=True (if disk is full)
+# Batch DELETE is the production default; InnoDB reuses released pages.
+# Setting any *_TABLE_SWAP_MODE flag to True fails its task. A table swap can
+# lose concurrent writes or detach triggers, so it is never a recovery mode.
+# OPTIMIZE TABLE rebuilds the table, uses substantial temporary disk, and
+# should be scheduled only after checking capacity and operational impact.
 #
 # REQUIRED INDEXES for fast DELETE operations:
 #   CREATE INDEX idx_ua_created_at ON UA_User_Audit(created_at);
