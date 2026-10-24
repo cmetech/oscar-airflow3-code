@@ -22,6 +22,7 @@ Alert Structure Expected:
 
 from datetime import datetime, timedelta
 import os
+import shlex
 from airflow import DAG
 from airflow.providers.standard.operators.python import PythonOperator, BranchPythonOperator
 from airflow.providers.standard.operators.empty import EmptyOperator
@@ -78,6 +79,11 @@ PLATFORM_ARCH = os.environ.get("PLATFORM_ARCH", "amd64")
 # Optional receiver service flags
 TRAPRECEIVER_ENABLED = os.environ.get("TRAPRECEIVER_ENABLED", "true").lower() == "true"
 SMTPRECEIVER_ENABLED = os.environ.get("SMTPRECEIVER_ENABLED", "true").lower() == "true"
+WEBHOOKRECEIVER_ENABLED = os.environ.get("WEBHOOKRECEIVER_ENABLED", "true").lower() == "true"
+CORRELATOR_ENABLED = os.environ.get("CORRELATOR_ENABLED", "true").lower() == "true"
+DECISION_ENABLED = os.environ.get("DECISION_ENABLED", "true").lower() == "true"
+DISCOVERY_ENABLED = os.environ.get("DISCOVERY_ENABLED", "true").lower() == "true"
+AIRFLOW_VERSION = os.environ.get("AIRFLOW_VERSION", "3.3.2")
 
 # Notifier configuration
 NOTIFIER_NAME = os.environ.get("OSCAR_ENABLE_NOTIFIER_NAME", "mail_notifier")
@@ -209,6 +215,7 @@ def _preprocess_required_containers(containers_json: str, namespace: str, platfo
 
     # OSCAR service patterns (from monitor service settings.py)
     OSCAR_SERVICE_PATTERNS = [
+        'correlator', 'webhookreceiver', 'encryptor', 'decision', 'natsauth', 'eventmesh-api', 'reverseproxy-sync',
         'monitor', 'trapreceiver', 'smtpreceiver', 'taskmanager', 'scheduler',
         'notifier', 'middleware', 'workflow', 'ui', 'util',
         '*_middleware',  # Matches all *_middleware services
@@ -217,13 +224,26 @@ def _preprocess_required_containers(containers_json: str, namespace: str, platfo
 
     adjusted = []
     for container in containers:
-        # Skip disabled optional receiver services
-        container_lower = container.lower()
-        if "trapreceiver" in container_lower and not TRAPRECEIVER_ENABLED:
-            logger.info(f"Skipping disabled service: {container}")
+        conditional = {
+            "trapreceiver": ("oscar-trapreceiver", TRAPRECEIVER_ENABLED),
+            "smtpreceiver": ("oscar-smtpreceiver", SMTPRECEIVER_ENABLED),
+            "webhookreceiver": ("oscar-webhookreceiver", WEBHOOKRECEIVER_ENABLED),
+            "correlator": ("oscar-correlator", CORRELATOR_ENABLED),
+            "decision": ("oscar-decision", DECISION_ENABLED),
+            "discovery_worker": ("oscar-taskmanager", DISCOVERY_ENABLED),
+        }
+        if container.startswith("compose:"):
+            project, name = container.removeprefix("compose:").split("/", 1)
+            if name in conditional and project == conditional[name][0] and not conditional[name][1]:
+                continue
+            if project == "oscar-workflow":
+                v2 = AIRFLOW_VERSION.split(".", 1)[0] == "2"
+                if (v2 and name in ("airflow-apiserver", "airflow-dag")) or (not v2 and name == "airflow-webserver"):
+                    continue
+            adjusted.append(container)
             continue
-        if "smtpreceiver" in container_lower and not SMTPRECEIVER_ENABLED:
-            logger.info(f"Skipping disabled service: {container}")
+        repository = re.sub(r":[^/:]+$", "", container.split("@", 1)[0])
+        if any(repository in (name, f"{namespace}/{name}") and not enabled for name, (_, enabled) in conditional.items()):
             continue
 
         # Step 1: Add namespace if OSCAR service
@@ -238,7 +258,7 @@ def _preprocess_required_containers(containers_json: str, namespace: str, platfo
 
         adjusted.append(container)
 
-    return adjusted
+    return list(dict.fromkeys(adjusted))
 
 
 def _detect_remote_platform(conn) -> str:
@@ -279,35 +299,28 @@ def _check_critical_containers_running(conn, oscar_home: str, expected_container
 
     Returns: (missing_containers, running_containers)
     """
-    # Get all running container images
-    docker_cmd = f"cd {oscar_home} && docker ps --format '{{{{.Image}}}}'"
+    # Labels distinguish service roles sharing an image; one-off jobs are not services.
+    docker_format = '{{.Image}}\t{{.Label "com.docker.compose.project"}}\t{{.Label "com.docker.compose.service"}}\t{{.Label "com.docker.compose.oneoff"}}'
+    docker_cmd = f"cd {shlex.quote(oscar_home)} && docker ps --format '{docker_format}'"
     result = conn.run(docker_cmd, hide=True, timeout=COMMAND_TIMEOUT, warn=True)
-
-    if not result.stdout:
-        logger.warning("No docker ps output - all containers may be down")
+    if not result.ok or not result.stdout:
         return expected_containers, []
+    rows = [line.split("\t") for line in result.stdout.splitlines() if line]
+    rows = [row for row in rows if len(row) < 4 or row[3].lower() != "true"]
 
-    running_images = [img.strip() for img in result.stdout.strip().split('\n') if img.strip()]
-    logger.debug(f"Found {len(running_images)} running containers")
+    def repository(reference):
+        value = reference.split("@", 1)[0]
+        return value.rsplit(":", 1)[0] if ":" in value.rsplit("/", 1)[-1] else value
 
-    missing = []
-    running = []
-
+    missing, running = [], []
     for expected in expected_containers:
-        # Version-agnostic: strip tag from expected
-        expected_name = expected.split(':')[0] if ':' in expected else expected
-
-        # Check if this image (any version) is running
-        # Compare: "oscar/monitor" with "oscar/monitor:v1.0.0"
-        found = any(
-            expected_name in running_img or running_img.startswith(expected_name + ':')
-            for running_img in running_images
-        )
-
-        if found:
-            running.append(expected)
+        if expected.startswith("compose:"):
+            project, service = expected.removeprefix("compose:").split("/", 1)
+            found = any(len(row) >= 3 and row[1:3] == [project, service] for row in rows)
         else:
-            missing.append(expected)
+            name = repository(expected)
+            found = any(repository(row[0]) == name or ("/" not in name and repository(row[0]).rsplit("/", 1)[-1] == name) for row in rows)
+        (running if found else missing).append(expected)
 
     return missing, running
 
