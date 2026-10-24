@@ -9,7 +9,7 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[1]
-DAG_SOURCE = ROOT / 'dags/oscar_housekeeping_cleanup.py'
+DAG_SOURCE = ROOT / 'dags/oscar_db_housekeeping_cleanup.py'
 CONFIG_SOURCE = ROOT / 'plugins/helpers/oscar_housekeeping_config.py'
 
 

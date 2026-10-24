@@ -2351,13 +2351,13 @@ def enforce_housekeeping_result(**context):
 
 
 HOUSEKEEPING_GUIDE_MD = """
-## OSCAR Housekeeping — user guide
+## OSCAR DB Housekeeping — user guide
 
 Runs **daily at 11:00 UTC** to clean database history. Airflow log deletion is outside this DAG:
 the independent `airflow-log-groomer` service deletes `.log` files unmodified for more than **3 days**
 and removes empty directories, checking every **15 minutes**. Override its retention with
 `AIRFLOW_LOG_RETENTION_DAYS` in `conf/env/workflow.env`; this does not change database retention.
-Set per-family retention and enabled state in **Settings → Application → Housekeeping**.
+Set per-family retention and enabled state in **Settings → Application → DB Housekeeping**.
 Database overrides are read once at the start of each run. Missing overrides use
 `plugins/helpers/oscar_housekeeping_config.py` (on the box: `/opt/oscar/app/oscar-workflow/airflow/`).
 The file is read fresh on every run. Trigger the DAG from this page or the workflow page.
@@ -2376,7 +2376,7 @@ Table swap modes are blocked because they can lose concurrent writes and bypass 
 
 
 with DAG(
-    dag_id='oscar_housekeeping_cleanup',
+    dag_id='oscar_db_housekeeping_cleanup',
     doc_md=HOUSEKEEPING_GUIDE_MD,
     default_args=default_args,
     description='Database housekeeping; Airflow log retention is managed by airflow-log-groomer',
