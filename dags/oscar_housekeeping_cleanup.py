@@ -1,9 +1,6 @@
 import os
 import logging
 import json
-import shutil
-import re
-from pathlib import Path
 from datetime import datetime, timedelta, timezone
 
 from airflow import DAG
@@ -242,12 +239,12 @@ def create_worklog(**context):
     ]
 
     # The worklog is a report, not a gate: every cleanup task depends on this
-    # one, so a worklog API failure here must not stop the disk cleanup. The
+    # one, so a worklog API failure here must not stop database cleanup. The
     # cleanup tasks already run without a worklog (wl_write ignores errors).
     try:
         worklog = hook.create_worklog(
             name="Oscar Housekeeping Worklog",
-            description="Worklog for housekeeping logs cleanup",
+            description="Worklog for database housekeeping cleanup",
             worklog_type=WorkLogType.DB,
             metadata=metadata,
         )
@@ -260,24 +257,11 @@ def create_worklog(**context):
     context['ti'].xcom_push(key='worklog_id', value=worklog['id'])
 
     try:
-        hook.info("Starting housekeeping logs cleanup workflow")
+        hook.info("Starting database housekeeping workflow")
     except Exception as e:
         logger.error(f"Could not add the start entry to worklog {worklog['id']}; cleanup continues: {e}")
 
     return worklog['id']
-
-
-def parse_size(size_str):
-    """Parse size string like '100MB' to bytes"""
-    size_str = str(size_str).upper()
-    if size_str.endswith('MB'):
-        return int(size_str[:-2]) * 1024 * 1024
-    elif size_str.endswith('GB'):
-        return int(size_str[:-2]) * 1024 * 1024 * 1024
-    elif size_str.endswith('KB'):
-        return int(size_str[:-2]) * 1024
-    else:
-        return int(size_str)
 
 
 def wl_write(worklog_hook, message: str, level: str = "INFO") -> None:
@@ -301,27 +285,13 @@ def wl_write(worklog_hook, message: str, level: str = "INFO") -> None:
     except Exception:
         pass
 
-def format_bytes(num_bytes):
-    """Format bytes into a human-readable string (KB, MB, GB)."""
-    if num_bytes is None:
-        return "0 B"
-    num_bytes = float(num_bytes)
-    if num_bytes >= 1024 * 1024 * 1024:
-        return f"{num_bytes / (1024 * 1024 * 1024):.2f} GB"
-    elif num_bytes >= 1024 * 1024:
-        return f"{num_bytes / (1024 * 1024):.2f} MB"
-    elif num_bytes >= 1024:
-        return f"{num_bytes / 1024:.2f} KB"
-    return f"{num_bytes:.0f} B"
-
-
 def build_task_report(task_name: str, cleanup_type: str, result: dict) -> dict:
     """
     Build a structured cleanup report from a task's result dict.
     
     Args:
-        task_name: Human-readable task name (e.g. "Airflow Logs")
-        cleanup_type: "file" or "db"
+        task_name: Human-readable task name
+        cleanup_type: "db"
         result: The result dict produced by the cleanup task
         
     Returns:
@@ -349,20 +319,8 @@ def build_task_report(task_name: str, cleanup_type: str, result: dict) -> dict:
     if result.get("dry_run"):
         report["status"] = "dry_run"
 
-    # File-based cleanup stats
-    if cleanup_type == "file":
-        report["files_deleted"] = result.get("files_deleted", 0)
-        report["dirs_deleted"] = result.get("dirs_deleted", 0)
-        space_bytes = result.get("space_freed_bytes", 0)
-        report["space_freed"] = format_bytes(space_bytes)
-        report["space_freed_bytes"] = space_bytes
-        if result.get("timeout_reached"):
-            report["warning"] = "Timeout reached - may need another run"
-        if result.get("limit_reached"):
-            report["warning"] = "Directory limit reached - may need another run"
-
     # DB-based cleanup stats
-    elif cleanup_type == "db":
+    if cleanup_type == "db":
         # Collect all row-deletion fields into a single rows_deleted total
         rows_deleted = 0
         row_details = {}
@@ -410,7 +368,6 @@ def build_task_report(task_name: str, cleanup_type: str, result: dict) -> dict:
 
 # Mapping of XCom keys to (task_name, cleanup_type) for report building
 TASK_REPORT_REGISTRY = [
-    ("cleanup_result", "clean_airflow_logs", "Airflow Logs", "file"),
     ("task_history_cleanup_result", "clean_task_history", "Task History (TM_History + TM_StageHistory)", "db"),
     ("alert_cleanup_result", "clean_alert_history", "Legacy Alerts (AM_Alert)", "db"),
     ("alert_history_cleanup_result", "clean_alert_history_records", "Alert History (AM_AlertHistory)", "db"),
@@ -419,300 +376,6 @@ TASK_REPORT_REGISTRY = [
     ("ticketing_audit_cleanup_result", "clean_ticketing_audit_history", "Ticketing Audit (TKT_Ticketing_Audit)", "db"),
     ("user_audit_cleanup_result", "clean_user_audit_history", "User Audit (UA_User_Audit)", "db"),
 ]
-
-
-@task
-def clean_airflow_logs(**context):
-    """Clean Airflow logs older than specified days - INDEPENDENT OPERATION
-    
-    Performance optimizations:
-    - Uses subprocess 'du' for fast size calculation
-    - Batch processing with limits
-    - Timeout protection
-    - Minimal logging for performance
-    """
-    import subprocess
-    import time
-    
-    # Worklog setup
-    worklog_hook = None
-    try:
-        worklog_id = context['ti'].xcom_pull(task_ids='create_worklog', key='worklog_id') if context else None
-        worklog_hook = WorkLogHook()
-        if worklog_id:
-            worklog_hook.set_worklog_id(worklog_id)
-    except Exception:
-        worklog_hook = None
-
-    def wl(message: str, level: str = "INFO") -> None:
-        wl_write(worklog_hook, message, level)
-
-    # Master kill switch check for Airflow logs cleanup
-    if not housekeeping_config.ENABLE_AIRFLOW_LOGS_CLEANUP:
-        logger.info("Airflow logs cleanup disabled by master flag (ENABLE_AIRFLOW_LOGS_CLEANUP=False)")
-        wl("Airflow logs cleanup skipped - master flag disabled", "WARNING")
-        return "Airflow logs cleanup disabled by master flag"
-
-    if not housekeeping_config.AIRFLOW_LOGS_CLEANUP_ENABLED:
-        logger.info("Airflow logs cleanup disabled")
-        wl("Airflow logs cleanup disabled by configuration", "INFO")
-        return "Airflow logs cleanup disabled"
-
-    # Configuration
-    days_to_keep = housekeeping_config.AIRFLOW_LOGS_DAYS_TO_KEEP
-    max_file_size = housekeeping_config.AIRFLOW_LOGS_MAX_FILE_SIZE
-    airflow_logs_dir = Path('/opt/airflow/logs')
-    
-    # PERFORMANCE LIMITS - Prevent infinite execution (configurable)
-    MAX_EXECUTION_TIME_SECONDS = housekeeping_config.AIRFLOW_LOGS_MAX_EXECUTION_TIME_SECONDS
-    MAX_DIRS_TO_PROCESS = housekeeping_config.AIRFLOW_LOGS_MAX_DIRS_TO_PROCESS
-    BATCH_PROGRESS_INTERVAL = housekeeping_config.AIRFLOW_LOGS_BATCH_PROGRESS_INTERVAL
-    
-    start_time = time.time()
-    
-    wl(f"Starting Airflow logs cleanup: days_to_keep={days_to_keep}, max_time={MAX_EXECUTION_TIME_SECONDS}s, max_dirs={MAX_DIRS_TO_PROCESS}", "INFO")
-
-    if not airflow_logs_dir.exists():
-        wl("Airflow logs directory does not exist", "WARNING")
-        return "Airflow logs directory does not exist"
-
-    cutoff_date = datetime.now(timezone.utc) - timedelta(days=days_to_keep)
-    min_age = datetime.now(timezone.utc) - timedelta(hours=housekeeping_config.MIN_FILE_AGE_HOURS)
-    
-    # Statistics
-    stats = {
-        "dirs_processed": 0,
-        "dirs_deleted": 0,
-        "files_deleted": 0,
-        "space_freed_bytes": 0,
-        "skipped_large": 0,
-        "skipped_recent": 0,
-        "timeout_reached": False,
-        "limit_reached": False
-    }
-    
-    def get_dir_size_fast(path: Path) -> int:
-        """Fast directory size calculation using subprocess du command"""
-        try:
-            result = subprocess.run(
-                ['du', '-sb', str(path)],
-                capture_output=True,
-                text=True,
-                timeout=10  # Timeout for individual du command
-            )
-            if result.returncode == 0:
-                size_str = result.stdout.split()[0]
-                return int(size_str)
-        except Exception as e:
-            logger.debug(f"du command failed for {path}, using fallback: {e}")
-        
-        # Fallback to stat-based estimation (fast, less accurate)
-        try:
-            return path.stat().st_size * 100  # Rough estimate
-        except Exception:
-            return 0
-    
-    def should_continue() -> bool:
-        """Check if we should continue processing"""
-        elapsed = time.time() - start_time
-        if elapsed > MAX_EXECUTION_TIME_SECONDS:
-            stats["timeout_reached"] = True
-            return False
-        if stats["dirs_processed"] >= MAX_DIRS_TO_PROCESS:
-            stats["limit_reached"] = True
-            return False
-        return True
-    
-    try:
-        # ===== Clean DAG run directories =====
-        dag_dirs = [d for d in airflow_logs_dir.iterdir() if d.is_dir() and d.name.startswith('dag_id=')]
-        wl(f"Found {len(dag_dirs)} DAG directories to scan", "INFO")
-        
-        for dag_dir in dag_dirs:
-            if not should_continue():
-                break
-            
-            try:
-                run_dirs = [d for d in dag_dir.iterdir() if d.is_dir() and d.name.startswith('run_id=')]
-                
-                for run_dir in run_dirs:
-                    if not should_continue():
-                        break
-                    
-                    stats["dirs_processed"] += 1
-                    
-                    # Log progress periodically
-                    if stats["dirs_processed"] % BATCH_PROGRESS_INTERVAL == 0:
-                        elapsed = int(time.time() - start_time)
-                        wl(f"Progress: {stats['dirs_processed']} dirs processed, {stats['dirs_deleted']} deleted, {elapsed}s elapsed", "INFO")
-                    
-                    try:
-                        # Extract timestamp from run_id
-                        run_name = run_dir.name
-                        timestamp_str = None
-                        
-                        if 'scheduled__' in run_name:
-                            timestamp_str = run_name.split('scheduled__')[1]
-                        elif 'manual__' in run_name:
-                            timestamp_str = run_name.split('manual__')[1]
-                        else:
-                            continue
-                        
-                        run_time = datetime.fromisoformat(timestamp_str.replace('+00:00', '+00:00'))
-                        
-                        # Check if old enough
-                        if run_time >= cutoff_date:
-                            continue
-                        
-                        # Check modification time
-                        dir_mtime = datetime.fromtimestamp(run_dir.stat().st_mtime, tz=timezone.utc)
-                        if dir_mtime >= min_age:
-                            stats["skipped_recent"] += 1
-                            continue
-                        
-                        # Fast size check using du command
-                        dir_size = get_dir_size_fast(run_dir)
-                        
-                        # Size limit check
-                        # if dir_size > parse_size(max_file_size):
-                        #    stats["skipped_large"] += 1
-                        #    if stats["dirs_processed"] % BATCH_PROGRESS_INTERVAL == 0:
-                        #        logger.debug(f"Skipping large dir: {run_dir.name} ({dir_size / 1024 / 1024:.1f} MB)")
-                        #    continue
-                        
-                        # DELETE IT
-                        shutil.rmtree(run_dir)
-                        stats["dirs_deleted"] += 1
-                        stats["space_freed_bytes"] += dir_size
-                        
-                    except (ValueError, AttributeError, OSError) as e:
-                        logger.debug(f"Could not process {run_dir.name}: {e}")
-                        continue
-                        
-            except Exception as e:
-                logger.warning(f"Error processing DAG directory {dag_dir.name}: {e}")
-                continue
-        
-        # ===== Clean scheduler directories =====
-        scheduler_dir = airflow_logs_dir / 'scheduler'
-        if scheduler_dir.exists() and should_continue():
-            wl("Processing scheduler logs", "INFO")
-            
-            try:
-                date_dirs = [d for d in scheduler_dir.iterdir() 
-                           if d.is_dir() and d.name != 'latest' and re.match(r'\d{4}-\d{2}-\d{2}', d.name)]
-                
-                for date_dir in date_dirs:
-                    if not should_continue():
-                        break
-                    
-                    stats["dirs_processed"] += 1
-                    
-                    try:
-                        dir_date = datetime.strptime(date_dir.name, '%Y-%m-%d').replace(tzinfo=timezone.utc)
-                        
-                        if dir_date >= cutoff_date:
-                            continue
-                        
-                        dir_mtime = datetime.fromtimestamp(date_dir.stat().st_mtime, tz=timezone.utc)
-                        if dir_mtime >= min_age:
-                            stats["skipped_recent"] += 1
-                            continue
-                        
-                        dir_size = get_dir_size_fast(date_dir)
-                        
-                        # if dir_size > parse_size(max_file_size):
-                        #    stats["skipped_large"] += 1
-                        #    continue
-                        
-                        # DELETE IT
-                        shutil.rmtree(date_dir)
-                        stats["dirs_deleted"] += 1
-                        stats["space_freed_bytes"] += dir_size
-                        
-                    except (ValueError, OSError) as e:
-                        logger.debug(f"Could not process scheduler dir {date_dir.name}: {e}")
-                        continue
-                        
-            except Exception as e:
-                logger.warning(f"Error processing scheduler directory: {e}")
-        
-        # ===== Clean DAG processor logs =====
-        dag_processor_dir = airflow_logs_dir / 'dag_processor_manager'
-        if dag_processor_dir.exists() and should_continue():
-            wl("Processing DAG processor logs", "INFO")
-            
-            try:
-                log_files = list(dag_processor_dir.rglob('*.log'))
-                
-                for log_file in log_files:
-                    if not should_continue():
-                        break
-                    
-                    stats["dirs_processed"] += 1
-                    
-                    try:
-                        mtime = datetime.fromtimestamp(log_file.stat().st_mtime, tz=timezone.utc)
-                        
-                        if mtime >= cutoff_date or mtime >= min_age:
-                            continue
-                        
-                        file_size = log_file.stat().st_size
-                        
-                        if file_size > parse_size(max_file_size):
-                            stats["skipped_large"] += 1
-                            continue
-                        
-                        # DELETE IT
-                        log_file.unlink()
-                        stats["files_deleted"] += 1
-                        stats["space_freed_bytes"] += file_size
-                        
-                    except OSError as e:
-                        logger.debug(f"Could not process log file {log_file.name}: {e}")
-                        continue
-                        
-            except Exception as e:
-                logger.warning(f"Error processing DAG processor logs: {e}")
-        
-        # Final statistics
-        elapsed_time = int(time.time() - start_time)
-        space_freed_mb = round(stats["space_freed_bytes"] / 1024 / 1024, 2)
-        
-        result = {
-            "dirs_processed": stats["dirs_processed"],
-            "dirs_deleted": stats["dirs_deleted"],
-            "files_deleted": stats["files_deleted"],
-            "space_freed_bytes": stats["space_freed_bytes"],
-            "space_freed_mb": space_freed_mb,
-            "skipped_large": stats["skipped_large"],
-            "skipped_recent": stats["skipped_recent"],
-            "timeout_reached": stats["timeout_reached"],
-            "limit_reached": stats["limit_reached"],
-            "execution_time_seconds": elapsed_time,
-            "days_to_keep": days_to_keep,
-            "summary": f"Processed {stats['dirs_processed']} items, deleted {stats['dirs_deleted']} dirs + {stats['files_deleted']} files, freed {space_freed_mb} MB in {elapsed_time}s"
-        }
-        
-        # Add warnings if limits were reached
-        if stats["timeout_reached"]:
-            result["warning"] = f"Cleanup stopped after {elapsed_time}s timeout - may need another run"
-            wl(f"WARNING: Timeout reached after {elapsed_time}s", "WARNING")
-        elif stats["limit_reached"]:
-            result["warning"] = f"Cleanup stopped after processing {stats['dirs_processed']} items - may need another run"
-            wl(f"WARNING: Directory limit reached", "WARNING")
-        
-        wl(f"Airflow logs cleanup completed: {result['summary']}", "INFO")
-        wl(json.dumps({"cleanup_stats": result}), "INFO")
-        context['ti'].xcom_push(key='cleanup_result', value=result)
-        
-        return result
-
-    except Exception as e:
-        elapsed = int(time.time() - start_time)
-        logger.error(f"Error cleaning Airflow logs after {elapsed}s: {e}")
-        wl(f"Error during Airflow logs cleanup: {e}", "ERROR")
-        raise
 
 
 @task
@@ -2594,9 +2257,6 @@ def close_worklog(**context):
     ti = context['ti']
     metadata_items = []
     total_rows_deleted = 0
-    total_files_deleted = 0
-    total_dirs_deleted = 0
-    total_space_freed_bytes = 0
     total_space_freed_gb = 0.0
     tasks_completed = 0
     tasks_skipped = 0
@@ -2625,11 +2285,7 @@ def close_worklog(**context):
         status = report.get("status", "unknown")
         if status in ("completed", "dry_run"):
             tasks_completed += 1
-            if cleanup_type == "file":
-                total_files_deleted += report.get("files_deleted", 0)
-                total_dirs_deleted += report.get("dirs_deleted", 0)
-                total_space_freed_bytes += report.get("space_freed_bytes", 0)
-            elif cleanup_type == "db":
+            if cleanup_type == "db":
                 total_rows_deleted += report.get("rows_deleted", 0)
                 total_space_freed_gb += report.get("space_freed_gb", 0) or 0
         elif status == "skipped":
@@ -2649,9 +2305,6 @@ def close_worklog(**context):
         "tasks_skipped": tasks_skipped,
         "tasks_failed": tasks_failed,
         "total_rows_deleted": total_rows_deleted,
-        "total_files_deleted": total_files_deleted,
-        "total_dirs_deleted": total_dirs_deleted,
-        "total_space_freed_files": format_bytes(total_space_freed_bytes),
         "total_space_freed_db_gb": round(total_space_freed_gb, 2),
     }
     metadata_items.append({
@@ -2700,7 +2353,7 @@ def enforce_housekeeping_result(**context):
 HOUSEKEEPING_GUIDE_MD = """
 ## OSCAR Housekeeping — user guide
 
-Runs **daily at 11:00 UTC** to clean database history. Airflow log deletion is disabled in this DAG:
+Runs **daily at 11:00 UTC** to clean database history. Airflow log deletion is outside this DAG:
 the independent `airflow-log-groomer` service deletes `.log` files unmodified for more than **3 days**
 and removes empty directories, checking every **15 minutes**. Override its retention with
 `AIRFLOW_LOG_RETENTION_DAYS` in `conf/env/workflow.env`; this does not change database retention.
@@ -2737,16 +2390,12 @@ with DAG(
     max_active_runs=1,
     on_failure_callback=_dag_failure,
     on_success_callback=_dag_success,
-    tags=['housekeeping', 'logs', 'worklog'],
+    tags=['housekeeping', 'database', 'worklog'],
 ):
     create_worklog_task = create_worklog()
     policy_task = load_housekeeping_policy()
 
     # Apply per-task retries using config
-    clean_logs_task = clean_airflow_logs.override(
-        retries=housekeeping_config.MAX_RETRIES,
-        retry_delay=timedelta(minutes=housekeeping_config.RETRY_DELAY_MINUTES),
-    )()
     clean_task_history_task = clean_task_history.override(
         on_success_callback=_cleanup_success,
         on_failure_callback=_cleanup_failure,
@@ -2802,7 +2451,6 @@ with DAG(
 
     # Run all cleanup tasks in parallel after creating the worklog, then join and close
     create_worklog_task >> policy_task >> [
-        clean_logs_task,
         clean_task_history_task,
         clean_alert_history_task,
         clean_alert_history_records_task,

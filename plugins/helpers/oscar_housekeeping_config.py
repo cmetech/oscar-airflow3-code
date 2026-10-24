@@ -11,9 +11,6 @@ import os
 # MASTER CONTROL FLAGS - Emergency Kill Switches (Per Category)
 # ============================================================================
 
-# airflow-log-groomer owns log retention; keep DAG deletion off to avoid overlapping cleaners.
-ENABLE_AIRFLOW_LOGS_CLEANUP = False
-
 # Master flag to enable/disable OSCAR database cleanup (TaskHistory, Alerts, Notifications)
 # Set to False to completely skip all database cleanup operations in case of emergency
 ENABLE_DATABASE_CLEANUP = True
@@ -49,21 +46,8 @@ ENABLE_TICKETING_AUDIT_CLEANUP = True
 ENABLE_USER_AUDIT_CLEANUP = True
 
 # ============================================================================
-# PROCESS-SPECIFIC CLEANING CONSTANTS - Each cleaning operation is independent
+# LEGACY FILE CLEANUP CONSTANTS - No DAG task consumes the settings below
 # ============================================================================
-
-# Airflow Logs Cleaning
-AIRFLOW_LOGS_CLEANUP_ENABLED = True
-AIRFLOW_LOGS_DAYS_TO_KEEP = 3  # Legacy fallback only; active retention is AIRFLOW_LOG_RETENTION_DAYS in workflow.env.
-AIRFLOW_LOGS_MAX_FILE_SIZE = '200MB'           # Don't delete files larger than this
-AIRFLOW_LOGS_SAFE_EXTENSIONS = ['.log', '.log.gz']  # Only clean these extensions
-AIRFLOW_LOGS_EXCLUDE_PATTERNS = ['current', 'active', 'running']  # Don't delete files with these names
-
-# Airflow Logs Performance Settings - Prevent infinite execution
-AIRFLOW_LOGS_MAX_EXECUTION_TIME_SECONDS = 1800  # 30 minutes max execution time
-AIRFLOW_LOGS_MAX_DIRS_TO_PROCESS = 5000         # Stop after processing this many directories
-AIRFLOW_LOGS_BATCH_PROGRESS_INTERVAL = 100      # Log progress every N items
-
 # ============================================================================
 # APPLICATION LOGS CLEANUP SETTINGS - Clean /home/splunk/logs subdirectories
 # ============================================================================
