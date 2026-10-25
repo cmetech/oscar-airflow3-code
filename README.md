@@ -121,3 +121,16 @@ grep -rn "from airflow\.hooks\.base import\|from airflow\.operators\.python impo
 # context execution_date direct access
 grep -rn "context\[.execution_date.\]" . --include="*.py"
 ```
+
+
+## Worklog categories and metadata (2026-10-10)
+
+`WorkLogHook.create_worklog`, `SyncWorkLogManager.create`, and `SyncWorkLogManager.open` accept an optional trailing `category` argument. Existing positional callers keep their meaning. `SyncWorkLogManager.update` preserves category when omitted and clears it with `category=None`. No team category is assigned automatically; the demo uses `network-operations` as an example.
+
+The API validates category (trimmed, at most 100 Unicode characters) and metadata values (strict strings, at most 1,024 characters). Helpers propagate API validation failures; do not truncate values to hide errors. Filter metadata with `field: metadata:<key>` and equals/contains/startsWith/endsWith. Deploy the backend category expansion before these producers and upgrade all writers before contracting metadata storage to VARCHAR(1024). No schema changes or services are deployed by this source update.
+
+Regression command from `oscar-airflow3-code` (or after `./oscar workflow sync`): `python -m pytest tests/test_worklog_category.py -q`.
+
+`WorkLogHook.add_metadata` accepts a single `{"key": "ticket", "value": ""}` item or a list of those items. It replaces supplied keys, retains unrelated existing keys, and preserves empty and whitespace string values. A nullable existing collection is treated as empty. Invalid values are forwarded to the API and failures propagate; they are never skipped as successful no-ops. The bundled alert, recovery and health DAGs use this documented format, with numeric duration formatted explicitly as a string.
+
+Worklog metadata create/update/merge logs include operations, IDs, counts, HTTP status and exception classification; submitted/existing metadata and request/response bodies are not logged. Write exceptions expose HTTP status without copying upstream response bodies. The regression suite covers INFO/DEBUG rejection logging, valid empty-value merge, nullable collections, invalid falsy inputs, and the actual metadata argument expressions from eight DAG call sites.

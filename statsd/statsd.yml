@@ -1,4 +1,50 @@
 mappings:
+  # Fixed housekeeping families are encoded in the name because classic StatsD drops tags.
+  - match: "*.oscar_housekeeping.rows_deleted.*"
+    match_metric_type: counter
+    name: "oscar_housekeeping_rows_deleted"
+    labels:
+      family: "$2"
+  - match: "*.oscar_housekeeping.runs_success.*"
+    match_metric_type: counter
+    name: "oscar_housekeeping_runs_success"
+    labels:
+      family: "$2"
+  - match: "*.oscar_housekeeping.runs_failure.*"
+    match_metric_type: counter
+    name: "oscar_housekeeping_runs_failure"
+    labels:
+      family: "$2"
+  - match: "*.oscar_housekeeping.dag_failure.*"
+    match_metric_type: counter
+    name: "oscar_housekeeping_runs_failure"
+    labels:
+      family: "dag"
+  - match: "*.oscar_housekeeping.dag_success.*"
+    match_metric_type: counter
+    name: "oscar_housekeeping_runs_success"
+    labels:
+      family: "dag"
+  - match: "*.oscar_housekeeping.last_success_epoch.*"
+    match_metric_type: gauge
+    name: "oscar_housekeeping_last_success_epoch"
+    labels:
+      family: "$2"
+  - match: "*.oscar_housekeeping.eligible_backlog.*"
+    match_metric_type: gauge
+    name: "oscar_housekeeping_eligible_backlog"
+    labels:
+      family: "$2"
+  - match: "*.oscar_housekeeping.duration_seconds.*"
+    match_metric_type: gauge
+    name: "oscar_housekeeping_duration_seconds"
+    labels:
+      family: "$2"
+  - match: "*.oscar_housekeeping.policy_enabled.*"
+    match_metric_type: gauge
+    name: "oscar_housekeeping_policy_enabled"
+    labels:
+      family: "$2"
   # Airflow StatsD metrics mappings (https://airflow.apache.org/docs/apache-airflow/stable/logging-monitoring/metrics.html)
   # === Counters ===
   - match: "(.+)\\.(.+)_start$"
