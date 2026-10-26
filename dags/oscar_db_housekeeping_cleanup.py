@@ -1011,6 +1011,8 @@ def clean_alert_history(**context):
 
 @task
 def clean_alert_history_records(**context):
+    import time
+
     # Master kill switch check for database cleanup
     if not housekeeping_config.ENABLE_DATABASE_CLEANUP:
         logger.info("Alert history cleanup skipped - master database flag disabled (ENABLE_DATABASE_CLEANUP=False)")
