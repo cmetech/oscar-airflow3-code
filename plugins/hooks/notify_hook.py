@@ -86,7 +86,7 @@ class NotifyHook(OscarHook):
             elif isinstance(notifier_id, str):
                 payload["notifier_id"] = notifier_id.strip()
 
-        logger.info(f"Sending notification with payload: {payload}")
+        logger.info("Sending notification")
         try:
             with httpx.Client(verify=self.verify_ssl, timeout=30.0) as client:
                 response = client.post(
@@ -96,13 +96,13 @@ class NotifyHook(OscarHook):
                     headers=self.headers
                 )
                 response.raise_for_status()
-                logger.info(f"Notification sent successfully. Response: {response.text}")
+                logger.info("Notification sent successfully")
                 try:
                     return response.json()
                 except Exception:
-                    return {"response": response.text}
+                    return {"status": "accepted"}
         except Exception as e:
-            logger.error(f"Error sending notification: {str(e)}")
+            logger.error("Notification send failed (%s)", type(e).__name__)
             raise e
 
     def create_notification(self, payload: Dict) -> Dict:
@@ -124,7 +124,7 @@ class NotifyHook(OscarHook):
         Returns:
           The JSON-decoded response from the API.
         """
-        logger.info(f"Creating notification with payload: {payload}")
+        logger.info("Creating notification")
         try:
             with httpx.Client(verify=self.verify_ssl, timeout=30.0) as client:
                 response = client.post(
@@ -133,10 +133,10 @@ class NotifyHook(OscarHook):
                     headers=self.headers
                 )
                 response.raise_for_status()
-                logger.info(f"Notification created successfully. Response: {response.text}")
+                logger.info("Notification created successfully")
                 return response.json()
         except Exception as e:
-            logger.error(f"Error creating notification: {str(e)}")
+            logger.error("Notification create failed (%s)", type(e).__name__)
             raise e
 
     def get_notification(self, notification_id: Union[str, uuid.UUID]) -> Dict:
@@ -150,7 +150,7 @@ class NotifyHook(OscarHook):
             The JSON-decoded response from the API.
         """
         notification_id = str(notification_id)
-        logger.info(f"Retrieving notification with ID: {notification_id}")
+        logger.info("Retrieving notification")
         try:
             with httpx.Client(verify=self.verify_ssl, timeout=30.0) as client:
                 response = client.get(
@@ -158,10 +158,10 @@ class NotifyHook(OscarHook):
                     headers=self.headers
                 )
                 response.raise_for_status()
-                logger.info(f"Notification retrieved successfully. Response: {response.text}")
+                logger.info("Notification retrieved successfully")
                 return response.json()
         except Exception as e:
-            logger.error(f"Error retrieving notification: {str(e)}")
+            logger.error("Notification retrieval failed (%s)", type(e).__name__)
             raise e
 
     def update_notification(self, notification_id: Union[str, uuid.UUID], payload: Dict) -> Dict:
@@ -176,7 +176,7 @@ class NotifyHook(OscarHook):
             The JSON-decoded response from the API.
         """
         notification_id = str(notification_id)
-        logger.info(f"Updating notification {notification_id} with payload: {payload}")
+        logger.info("Updating notification")
         try:
             with httpx.Client(verify=self.verify_ssl, timeout=30.0) as client:
                 response = client.put(
@@ -185,10 +185,10 @@ class NotifyHook(OscarHook):
                     headers=self.headers
                 )
                 response.raise_for_status()
-                logger.info(f"Notification updated successfully. Response: {response.text}")
+                logger.info("Notification updated successfully")
                 return response.json()
         except Exception as e:
-            logger.error(f"Error updating notification: {str(e)}")
+            logger.error("Notification update failed (%s)", type(e).__name__)
             raise e
 
     def cancel_notification(self, notification_id: Union[str, uuid.UUID], reason: Optional[str] = None) -> Dict:
@@ -207,7 +207,7 @@ class NotifyHook(OscarHook):
         if reason:
             payload["reason"] = reason
 
-        logger.info(f"Canceling notification {notification_id} with reason: {reason}")
+        logger.info("Canceling notification")
         try:
             with httpx.Client(verify=self.verify_ssl, timeout=30.0) as client:
                 response = client.post(
@@ -216,10 +216,10 @@ class NotifyHook(OscarHook):
                     headers=self.headers
                 )
                 response.raise_for_status()
-                logger.info(f"Notification canceled successfully. Response: {response.text}")
+                logger.info("Notification canceled successfully")
                 return response.json()
         except Exception as e:
-            logger.error(f"Error canceling notification: {str(e)}")
+            logger.error("Notification cancellation failed (%s)", type(e).__name__)
             raise e
 
     def resend_notification(self, notification_id: Union[str, uuid.UUID], force: bool = False) -> Dict:
@@ -236,7 +236,7 @@ class NotifyHook(OscarHook):
         notification_id = str(notification_id)
         payload = {"force": force}
 
-        logger.info(f"Resending notification {notification_id} with force={force}")
+        logger.info("Resending notification (force=%s)", force)
         try:
             with httpx.Client(verify=self.verify_ssl, timeout=30.0) as client:
                 response = client.post(
@@ -245,10 +245,10 @@ class NotifyHook(OscarHook):
                     headers=self.headers
                 )
                 response.raise_for_status()
-                logger.info(f"Notification resent successfully. Response: {response.text}")
+                logger.info("Notification resent successfully")
                 return response.json()
         except Exception as e:
-            logger.error(f"Error resending notification: {str(e)}")
+            logger.error("Notification resend failed (%s)", type(e).__name__)
             raise e
 
     def respond_notification(self, notification_id: Union[str, uuid.UUID]) -> Dict:
@@ -262,7 +262,7 @@ class NotifyHook(OscarHook):
             The JSON-decoded response from the API.
         """
         notification_id = str(notification_id)
-        logger.info(f"Marking notification {notification_id} as responded")
+        logger.info("Marking notification as responded")
         try:
             with httpx.Client(verify=self.verify_ssl, timeout=30.0) as client:
                 response = client.post(
@@ -270,10 +270,10 @@ class NotifyHook(OscarHook):
                     headers=self.headers
                 )
                 response.raise_for_status()
-                logger.info(f"Notification marked as responded successfully. Response: {response.text}")
+                logger.info("Notification marked as responded successfully")
                 return response.json()
         except Exception as e:
-            logger.error(f"Error marking notification as responded: {str(e)}")
+            logger.error("Notification response update failed (%s)", type(e).__name__)
             raise e
 
     def escalate_notification(self, notification_id: Union[str, uuid.UUID]) -> Dict:
@@ -287,7 +287,7 @@ class NotifyHook(OscarHook):
             The JSON-decoded response from the API.
         """
         notification_id = str(notification_id)
-        logger.info(f"Escalating notification {notification_id}")
+        logger.info("Escalating notification")
         try:
             with httpx.Client(verify=self.verify_ssl, timeout=30.0) as client:
                 response = client.post(
@@ -295,10 +295,10 @@ class NotifyHook(OscarHook):
                     headers=self.headers
                 )
                 response.raise_for_status()
-                logger.info(f"Notification escalated successfully. Response: {response.text}")
+                logger.info("Notification escalated successfully")
                 return response.json()
         except Exception as e:
-            logger.error(f"Error escalating notification: {str(e)}")
+            logger.error("Notification escalation failed (%s)", type(e).__name__)
             raise e
 
     def list_notifications(
@@ -345,7 +345,7 @@ class NotifyHook(OscarHook):
         if filter:
             params["filter"] = filter
 
-        logger.info(f"Listing notifications with params: {params}")
+        logger.info("Listing notifications")
         try:
             with httpx.Client(verify=self.verify_ssl, timeout=30.0) as client:
                 response = client.get(
@@ -354,10 +354,10 @@ class NotifyHook(OscarHook):
                     headers=self.headers
                 )
                 response.raise_for_status()
-                logger.info(f"Notifications retrieved successfully. Response: {response.text}")
+                logger.info("Notifications retrieved successfully")
                 return response.json()
         except Exception as e:
-            logger.error(f"Error listing notifications: {str(e)}")
+            logger.error("Notification listing failed (%s)", type(e).__name__)
             raise e
 
     def get_notifier(self, identifier: str, by_name: bool = True) -> Dict:
@@ -376,7 +376,7 @@ class NotifyHook(OscarHook):
         Raises:
             Exception: If the notifier is not found or an error occurs.
         """
-        logger.info(f"Retrieving notifier with identifier: {identifier} (by_name={by_name})")
+        logger.info("Retrieving notifier (by_name=%s)", by_name)
         try:
             with httpx.Client(verify=self.verify_ssl, timeout=30.0) as client:
                 params = {"by_name": by_name} if by_name else {}
@@ -386,8 +386,8 @@ class NotifyHook(OscarHook):
                     headers=self.headers
                 )
                 response.raise_for_status()
-                logger.info(f"Notifier retrieved successfully. Response: {response.text}")
+                logger.info("Notifier retrieved successfully")
                 return response.json()
         except Exception as e:
-            logger.error(f"Error retrieving notifier: {str(e)}")
+            logger.error("Notifier retrieval failed (%s)", type(e).__name__)
             raise e

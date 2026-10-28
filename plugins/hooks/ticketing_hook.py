@@ -38,6 +38,17 @@ class TicketingHook(OscarHook):
             self.headers["X-API-Key"] = api_key
         logger.info(f"Initialized TicketingHook with base URL: {self.base_url}")
 
+    def _read_headers(self, custom_field_keys):
+        if custom_field_keys is None:
+            return self.headers
+        if self.protocol != 'https' or not (self.verify_ssl is True or
+                isinstance(self.verify_ssl, str) and os.path.isfile(self.verify_ssl)):
+            raise ValueError('Ticket automation requires verified middleware TLS')
+        key = self.get_connection('ticket_automation_custom_fields').password
+        if not key:
+            raise ValueError('Ticket automation custom-field key unavailable')
+        return {**self.headers, 'X-API-Key': key}
+
     # -----------------------
     # Ticket endpoints
     # -----------------------
@@ -48,11 +59,14 @@ class TicketingHook(OscarHook):
             response.raise_for_status()
             return response.json()
 
-    def get_ticket(self, ticket_id: str, system: Optional[str] = None) -> Dict[str, Any]:
+    def get_ticket(self, ticket_id: str, system: Optional[str] = None,
+                   custom_field_keys: Optional[List[str]] = None) -> Dict[str, Any]:
         params = {"system": system} if system else None
+        if custom_field_keys is not None:
+            params = {**(params or {}), 'custom_field_keys': ','.join(custom_field_keys)}
         url = f"{self.base_url}/{ticket_id}"
-        with httpx.Client(verify=self.verify_ssl, timeout=30.0, follow_redirects=True) as client:
-            response = client.get(url, headers=self.headers, params=params)
+        with httpx.Client(verify=self.verify_ssl, timeout=30.0, follow_redirects=custom_field_keys is None) as client:
+            response = client.get(url, headers=self._read_headers(custom_field_keys), params=params)
             response.raise_for_status()
             return response.json()
 
@@ -62,6 +76,7 @@ class TicketingHook(OscarHook):
         page: int = 1,
         per_page: int = 20,
         system: Optional[str] = None,
+        custom_field_keys: Optional[List[str]] = None,
     ) -> List[Dict[str, Any]]:
         params: Dict[str, Any] = {"page": page, "per_page": per_page}
         if system:
@@ -71,15 +86,17 @@ class TicketingHook(OscarHook):
             for k, v in filters.items():
                 if v is not None:
                     params[k] = v
-        with httpx.Client(verify=self.verify_ssl, timeout=30.0, follow_redirects=True) as client:
-            response = client.get(self.base_url, headers=self.headers, params=params)
+        if custom_field_keys is not None:
+            params['custom_field_keys'] = ','.join(custom_field_keys)
+        with httpx.Client(verify=self.verify_ssl, timeout=30.0, follow_redirects=custom_field_keys is None) as client:
+            response = client.get(self.base_url, headers=self._read_headers(custom_field_keys), params=params)
             response.raise_for_status()
             return response.json()
 
     def update_ticket(self, ticket_id: str, ticket_update: Dict[str, Any], system: Optional[str] = None) -> Dict[str, Any]:
         params = {"system": system} if system else None
         url = f"{self.base_url}/{ticket_id}"
-        with httpx.Client(verify=self.verify_ssl, timeout=30.0, follow_redirects=True) as client:
+        with httpx.Client(verify=self.verify_ssl, timeout=30.0, follow_redirects=False) as client:
             response = client.patch(url, headers=self.headers, params=params, json=ticket_update)
             response.raise_for_status()
             return response.json()
