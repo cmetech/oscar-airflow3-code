@@ -41,9 +41,8 @@ class TicketingHook(OscarHook):
     def _read_headers(self, custom_field_keys):
         if custom_field_keys is None:
             return self.headers
-        if self.protocol != 'https' or not (self.verify_ssl is True or
-                isinstance(self.verify_ssl, str) and os.path.isfile(self.verify_ssl)):
-            raise ValueError('Ticket automation requires verified middleware TLS')
+        if self.protocol != 'https':
+            raise ValueError('Ticket automation requires HTTPS middleware')
         key = self.get_connection('ticket_automation_custom_fields').password
         if not key:
             raise ValueError('Ticket automation custom-field key unavailable')

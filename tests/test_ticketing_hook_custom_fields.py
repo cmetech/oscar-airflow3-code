@@ -41,10 +41,16 @@ def test_custom_fields_use_dedicated_key_only_for_opt_in_reads(monkeypatch):
     assert seen[1].url.params['custom_field_keys'] == 'email'
 
 
-def test_custom_fields_require_verified_tls():
+def test_custom_fields_allow_unverified_https():
     hook = TicketingHook()
     hook.verify_ssl = False
-    with pytest.raises(ValueError, match='verified middleware TLS'):
+    assert hook._read_headers(['email'])['X-API-Key'] == 'dedicated-key'
+
+
+def test_custom_fields_still_require_https():
+    hook = TicketingHook()
+    hook.protocol = 'http'
+    with pytest.raises(ValueError, match='HTTPS middleware'):
         hook._read_headers(['email'])
 
 
