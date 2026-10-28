@@ -32,7 +32,7 @@ def _safe_log(worklog, incident_number, event):
 
 def run_once(tickets, decide, state, registry, recipe, raw_recipe, *, mapping,
              effect_key, render_note, outcome_unknown, lookup_not_found,
-             live_writes=False, worklog=None, worklog_factory=None, notify=None):
+             live_writes=False, output_writes=False, worklog=None, worklog_factory=None, notify=None):
     """Ingest by keyset, pin recipe, and execute semantic effects at most once."""
     counts = {'ingested': 0, 'processed': 0, 'manual_review': 0}
     cursor = None
@@ -68,11 +68,13 @@ def run_once(tickets, decide, state, registry, recipe, raw_recipe, *, mapping,
                     counts['manual_review'] += 1
                     _safe_log(ticket_worklog, ticket['incident_number'], 'conflicting identity; manual review')
                     continue
-                ticket_live_writes = live_writes and pinned['stub_writes'] is False
-                if ticket_live_writes and ticket.get('created_by') not in pinned['approved_creators']:
+                iam_live_writes = live_writes and pinned['stub_writes'] is False
+                deliver_outputs = iam_live_writes or output_writes
+                if deliver_outputs and (ticket.get('created_by') not in pinned['approved_creators'] or
+                    (output_writes and not iam_live_writes and ticket.get('incident_number') not in pinned.get('approved_incidents', []))):
                     state.set_status(sid, 'manual_review')
                     counts['manual_review'] += 1
-                    _safe_log(ticket_worklog, ticket['incident_number'], 'unapproved ticket creator; manual review')
+                    _safe_log(ticket_worklog, ticket['incident_number'], 'unapproved ticket creator or incident; manual review')
                     continue
                 saved_mapping = row.get('mapping_snapshot')
                 if isinstance(saved_mapping, str):
@@ -133,7 +135,7 @@ def run_once(tickets, decide, state, registry, recipe, raw_recipe, *, mapping,
                         break
                     if context is None:
                         try:
-                            context = handler['call'](facts, pinned_mapping, ticket_live_writes)
+                            context = handler['call'](facts, pinned_mapping, iam_live_writes)
                         except lookup_not_found:
                             context = None
                         except RuntimeError:
@@ -163,13 +165,13 @@ def run_once(tickets, decide, state, registry, recipe, raw_recipe, *, mapping,
                         continue
                     if handler['kind'] != 'write':
                         raise ValueError('Unregistered action in plan')
-                    key = effect_key('snow', sid, action, handler['target'](context), stub=not ticket_live_writes)
+                    key = effect_key('snow', sid, action, handler['target'](context), stub=not iam_live_writes)
                     if state.claim_effect(key, sid, action):
                         try:
                             current = tickets.get_ticket(sid, system='snow', custom_field_keys=pinned['custom_field_keys'])
                             if not eligible(current, ticket, pinned) or not identity_matches(current, facts, pinned):
                                 raise ValueError('ticket drift')
-                            receipt = handler['call'](context, ticket_live_writes)
+                            receipt = handler['call'](context, iam_live_writes)
                         except outcome_unknown:
                             state.finish_effect(key, 'outcome_unknown')
                         except Exception:
@@ -192,9 +194,11 @@ def run_once(tickets, decide, state, registry, recipe, raw_recipe, *, mapping,
                     counts['manual_review'] += 1
                     _safe_log(ticket_worklog, number, 'no unique response rule; manual review')
                     continue
+                output_outcome = next(reversed(action_outcomes.values()), 'accepted' if iam_live_writes else 'stubbed')
                 template = outputs.get('ticket_note')
                 if template:
-                    note_key = effect_key('snow', sid, 'ticket_note', template, stub=not ticket_live_writes)
+                    note_target = template + (':iam_stub' if output_writes and not iam_live_writes else '')
+                    note_key = effect_key('snow', sid, 'ticket_note', note_target, stub=not deliver_outputs)
                     if state.claim_effect(note_key, sid, 'ticket_note'):
                         write_started = False
                         try:
@@ -202,14 +206,17 @@ def run_once(tickets, decide, state, registry, recipe, raw_recipe, *, mapping,
                             if not eligible(fresh, ticket, pinned) or not identity_matches(fresh, facts, pinned):
                                 raise ValueError('ticket drift')
                             note = render_note(template, incident_number=number,
-                                outcome='accepted' if ticket_live_writes else 'stubbed')
-                            if ticket_live_writes:
+                                outcome=output_outcome)
+                            if deliver_outputs:
                                 write_started = True
-                                tickets.update_ticket(sid, {'name': fresh['name'], 'work_info_notes': note}, system='snow')
+                                update = {'name': fresh['name'], 'work_info_notes': note}
+                                if output_writes and not iam_live_writes:
+                                    update['add_comment'] = note
+                                tickets.update_ticket(sid, update, system='snow')
                         except Exception:
                             state.finish_effect(note_key, 'outcome_unknown' if write_started else 'definitely_failed')
                         else:
-                            state.finish_effect(note_key, 'succeeded', {'outcome': 'sent' if ticket_live_writes else 'stubbed'})
+                            state.finish_effect(note_key, 'succeeded', {'outcome': 'sent' if deliver_outputs else 'stubbed'})
                     if state.effect_status(note_key) != 'succeeded':
                         state.set_status(sid, 'manual_review')
                         counts['manual_review'] += 1
@@ -217,7 +224,9 @@ def run_once(tickets, decide, state, registry, recipe, raw_recipe, *, mapping,
                 email = outputs.get('email')
                 if email:
                     target = json.dumps([email['notifier'], email['recipients'], email['template']], separators=(',', ':'))
-                    mail_key = effect_key('snow', sid, 'email', target, stub=not ticket_live_writes)
+                    if output_writes and not iam_live_writes:
+                        target += ':iam_stub'
+                    mail_key = effect_key('snow', sid, 'email', target, stub=not deliver_outputs)
                     if state.claim_effect(mail_key, sid, 'email'):
                         write_started = False
                         try:
@@ -225,18 +234,22 @@ def run_once(tickets, decide, state, registry, recipe, raw_recipe, *, mapping,
                             if not eligible(fresh, ticket, pinned) or not identity_matches(fresh, facts, pinned):
                                 raise ValueError('ticket drift')
                             message = render_note(email['template'], incident_number=number,
-                                outcome='accepted' if ticket_live_writes else 'stubbed')
-                            if ticket_live_writes:
+                                outcome=output_outcome)
+                            if deliver_outputs:
                                 if notify is None:
                                     raise ValueError('Approved notifier unavailable')
                                 write_started = True
-                                notify.send_notification({'name': email['notifier'],
+                                response = notify.send_notification({'name': email['notifier'],
                                     'recipients': email['recipients'], 'subject': 'Ticket automation for ' + number,
-                                    'message': message})
+                                    'message': message, 'pre_rendered': True})
+                                if isinstance(response, dict) and response.get('message') == (
+                                    f"Notifier {email['notifier']} is disabled, notification not sent"):
+                                    write_started = False
+                                    raise ValueError('Notifier disabled')
                         except Exception:
                             state.finish_effect(mail_key, 'outcome_unknown' if write_started else 'definitely_failed')
                         else:
-                            state.finish_effect(mail_key, 'succeeded', {'outcome': 'sent' if ticket_live_writes else 'stubbed'})
+                            state.finish_effect(mail_key, 'succeeded', {'outcome': 'accepted' if deliver_outputs else 'stubbed'})
                     if state.effect_status(mail_key) != 'succeeded':
                         state.set_status(sid, 'manual_review')
                         counts['manual_review'] += 1
