@@ -170,3 +170,38 @@ USER_AUDIT_MAINTENANCE_OPTIMIZATION = False  # OPTIMIZE rebuilds the table and n
 #   CREATE INDEX idx_tm_created_at ON TM_History(created_at);
 #   CREATE INDEX idx_ntf_created_at ON NTF_Notifications_Audit(created_at);
 #   CREATE INDEX idx_tkt_created_at ON TKT_Ticketing_Audit(created_at);
+
+
+# DB-only retention families ported from 2026-10-08.
+# LIVE deletes FK children before their parent in bounded batches; dry runs count only.
+# Worklogs - TM_WorkLog + TM_WorkLogEntries + TM_WorkLogMetadata. CLOSED worklogs only.
+ENABLE_WORKLOG_CLEANUP = True
+WORKLOG_DAYS_TO_KEEP = 30
+WORKLOG_BATCH_SIZE = 500
+WORKLOG_MAX_ITERATIONS = 200
+WORKLOG_MAINTENANCE_OPTIMIZATION = False  # Follow the bounded daily-delete default.
+
+# LLM gateway - LLM_Spend_Logs + LLM_Chat_Audit (one row per LLM request).
+ENABLE_LLM_LOGS_CLEANUP = True
+LLM_LOGS_DAYS_TO_KEEP = 90
+LLM_LOGS_BATCH_SIZE = 1000
+LLM_LOGS_MAX_ITERATIONS = 200
+LLM_LOGS_MAINTENANCE_OPTIMIZATION = False
+
+# SLI events - MS_SLI_Events + MS_SLI_EventMetadata. OFF: MS_SLI_Events has no index on
+# `timestamp`, so each batch is a full scan; add the index before enabling on a big table.
+ENABLE_SLI_EVENTS_CLEANUP = False
+SLI_EVENTS_DAYS_TO_KEEP = 90
+SLI_EVENTS_BATCH_SIZE = 1000
+SLI_EVENTS_MAX_ITERATIONS = 200
+SLI_EVENTS_MAINTENANCE_OPTIMIZATION = False
+
+# Task-history retirement fence - TM_HistoryRetired (one row per deleted TM_History row, written
+# by trigger trg_tm_history_retire). Grows as fast as TM_History is cleaned. Pruning re-opens the
+# "never recreate deleted history" fence for executions older than the retention. OFF until the
+# owner confirms the fence may expire (see HOUSEKEEPING-DAG-SYNC-20261008.md).
+ENABLE_TASK_HISTORY_RETIRED_CLEANUP = False
+TASK_HISTORY_RETIRED_DAYS_TO_KEEP = 90
+TASK_HISTORY_RETIRED_BATCH_SIZE = 5000
+TASK_HISTORY_RETIRED_MAX_ITERATIONS = 400
+TASK_HISTORY_RETIRED_MAINTENANCE_OPTIMIZATION = False
