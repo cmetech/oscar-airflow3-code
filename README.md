@@ -134,3 +134,10 @@ Regression command from `oscar-airflow3-code` (or after `./oscar workflow sync`)
 `WorkLogHook.add_metadata` accepts a single `{"key": "ticket", "value": ""}` item or a list of those items. It replaces supplied keys, retains unrelated existing keys, and preserves empty and whitespace string values. A nullable existing collection is treated as empty. Invalid values are forwarded to the API and failures propagate; they are never skipped as successful no-ops. The bundled alert, recovery and health DAGs use this documented format, with numeric duration formatted explicitly as a string.
 
 Worklog metadata create/update/merge logs include operations, IDs, counts, HTTP status and exception classification; submitted/existing metadata and request/response bodies are not logged. Write exceptions expose HTTP status without copying upstream response bodies. The regression suite covers INFO/DEBUG rejection logging, valid empty-value merge, nullable collections, invalid falsy inputs, and the actual metadata argument expressions from eight DAG call sites.
+
+## Object storage artifacts
+
+`ObjectStorageHook` provides direct, verified-TLS RustFS access through the existing
+Airflow S3 provider and a scoped Airflow/Vault connection. Upload files and pass
+bucket/key references to downstream tasks. See [setup, rotation and workflow examples](examples/README-object-storage.md).
+The opt-in [two-task example](examples/object_storage_handoff.py) is outside `dags/`.
