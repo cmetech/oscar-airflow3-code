@@ -10,8 +10,8 @@
    ./oscar exec python rustfs_manager.py app-create airflow-artifacts workflow-artifacts write
    ```
    Provision this explicitly, not during every task or startup. Fresh installs remain empty. Do not give tasks RustFS root keys or the credential-manager AppRole. Use separate buckets/connections for separate trust boundaries.
-2. In OSCAR's Connections management, create `oscar_object_storage`, type **Amazon Web Services (`aws`)**, stored in Vault. Set login/password to the scoped keys from `kv/oscar/objectstorage/apps/airflow-artifacts/credentials`. Never put credentials in a DAG, command argument, log, or XCom.
-3. Set connection extras to:
+2. In OSCAR's Connections management, create `oscar_object_storage`, type **Object Storage (S3-compatible)**, stored in Vault. Set Access key / Secret key to the scoped keys from `kv/oscar/objectstorage/apps/airflow-artifacts/credentials`. Never put credentials in a DAG, command argument, log, or XCom.
+3. In the dedicated storage settings, set the HTTPS endpoint, default bucket and region. Leave the optional CA certificate path blank for the OSCAR CA. These fields save the following compatible connection extras:
    ```json
    {
      "endpoint_url": "https://rustfs:9000",
@@ -19,6 +19,8 @@
      "bucket_name": "workflow-artifacts"
    }
    ```
+   The UI stores the underlying connection type as `aws`, which both helpers already support. Connection IDs are stored in lowercase; use that ID in `conn_id`. Editing a connection retains its hidden secret unless you enter a replacement. Clearing the custom CA path restores each worker’s default OSCAR CA. The wizard provisions a connection only; it does not create buckets or grant bucket permissions.
+
    OSCAR Connections writes the standard `conn_uri` record at `kv/airflow/connections/oscar_object_storage`; this format is readable by both Airflow and TaskManager's existing connection lookup. A manually created Vault record containing separate login/password fields works with Airflow but is **not** the shared format expected by that middleware lookup. The utility application record is not automatically published as a connection.
 
    Leave `verify` unset for a shared internal connection: each adapter uses its worker's OSCAR CA path (`/opt/airflow/ssl/ca-cert.pem` for Airflow; `CA_CERTFILE`, normally `/home/splunk/ssl/ca-cert.pem`, for TaskManager). For custom trust, a `verify` certificate path must exist in every consumer container. Credentials and S3 traffic require verified HTTPS. Remote workers need network/DNS access to a reachable HTTPS gateway and its trusted CA.
@@ -150,3 +152,5 @@ stored another ID; TaskManager consumed the latter. Byte comparisons and tempora
 file cleanup passed in both directions. Airflow used a process-local connection
 environment for this standalone test, not a scheduled TaskFlow execution. Test
 connection/object/bucket/policy cleanup completed and the scoped key was revoked.
+
+The Object Storage wizard requires the matching AdminUI and Middleware update. Complete AWS storage settings (endpoint_url, bucket_name and region_name together) replace stored extras on update, allowing removed optional settings to clear; partial updates retain the existing merge behavior.

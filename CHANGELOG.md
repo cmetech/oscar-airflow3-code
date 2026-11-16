@@ -1,3 +1,7 @@
+## Object Storage connection setup — 2026-11-16
+
+- Document the dedicated OSCAR Object Storage connection wizard and connection-ID/CA behavior.
+
 ## Workflow/task file-ID helpers — 2026-11-16
 
 - Add store_file, retrieve_file and open_file interfaces for shared file references across Airflow and TaskManager workers, using scoped connections and direct verified-TLS RustFS transfers.
