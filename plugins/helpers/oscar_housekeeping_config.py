@@ -121,7 +121,7 @@ ALERTS_MAINTENANCE_OPTIMIZATION = False  # Run OPTIMIZE TABLE after delete (recl
 # unresolved episodes remain even if their first occurrence is old.
 ALERT_HISTORY_DAYS_TO_KEEP = 30
 ALERT_HISTORY_BATCH_SIZE = 1000
-ALERT_HISTORY_MAX_ITERATIONS = 100
+ALERT_HISTORY_MAX_ITERATIONS = 500  # 1000x500 = 500K/run; 100 capped below AT&T's ~138K closes/day
 ALERT_HISTORY_MAINTENANCE_OPTIMIZATION = False  # Run OPTIMIZE TABLE after delete (reclaims disk space safely)
 
 # Alert activity audit is evidence separate from the mutable alert episode.

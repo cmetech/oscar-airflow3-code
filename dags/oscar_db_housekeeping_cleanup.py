@@ -2390,6 +2390,9 @@ with DAG(
     # each other (a manual trigger while the scheduled run is active, or the
     # scheduled run Airflow starts on unpause).
     max_active_runs=1,
+    # Ships active: paused by default, history grew without bound in production (AT&T 26.4.4: 90 M label rows,
+    # disk-full outage). Existing installs keep their paused state; their upgrade must unpause it once.
+    is_paused_upon_creation=False,
     on_failure_callback=_dag_failure,
     on_success_callback=_dag_success,
     tags=['housekeeping', 'database', 'worklog'],
