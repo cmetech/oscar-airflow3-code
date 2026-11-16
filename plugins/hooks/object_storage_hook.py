@@ -5,18 +5,20 @@ from urllib.parse import urlsplit
 from airflow.providers.amazon.aws.hooks.s3 import S3Hook
 from airflow.providers.amazon.aws.utils.connection_wrapper import AwsConnectionWrapper
 from botocore.config import Config
+from helpers.file_store import FileStore
 
 
-class ObjectStorageHook(S3Hook):
+class ObjectStorageHook(FileStore, S3Hook):
     """Use scoped credentials; instantiate inside tasks, never during DAG parsing.
 
     Inherits S3Hook's load_bytes/load_string/read_key/download_file and listing
     methods. upload_file returns a small reference suitable for downstream XCom.
     """
 
-    def __init__(self, conn_id="oscar_object_storage"):
+    def __init__(self, conn_id="oscar_object_storage", bucket_name=None):
         if not conn_id:
             raise ValueError("An explicit object-storage connection is required")
+        self.bucket_name = bucket_name
         super().__init__(aws_conn_id=conn_id, config=Config(
             signature_version="s3v4", s3={"addressing_style": "path"},
             connect_timeout=10, read_timeout=60,
@@ -51,3 +53,12 @@ class ObjectStorageHook(S3Hook):
         """
         self.load_file(filename=filename, bucket_name=bucket_name, key=key, replace=replace)
         return {"bucket": bucket_name, "key": key}
+
+    def _file_client(self):
+        return self.get_conn()
+
+    def _file_bucket(self):
+        bucket = self.bucket_name or self.conn_config.extra_config.get("bucket_name")
+        if not isinstance(bucket, str) or not bucket:
+            raise ValueError("Configure bucket_name in the object-storage connection extras")
+        return bucket

@@ -1,3 +1,8 @@
+## Workflow/task file-ID helpers — 2026-11-16
+
+- Add store_file, retrieve_file and open_file interfaces for shared file references across Airflow and TaskManager workers, using scoped connections and direct verified-TLS RustFS transfers.
+- Preserve the existing Airflow bucket/key API; add task helper exports, a simplified TaskFlow example, validation/cleanup tests, and shared connection/retention guidance. Requires managed Airflow code sync and a TaskManager image rebuild; no schema migration or automatic bucket creation.
+
 # Changelog
 
 ## 2026-11-15

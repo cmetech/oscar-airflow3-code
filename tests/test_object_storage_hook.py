@@ -3,6 +3,7 @@ import json
 import sys
 import unittest
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 from airflow.sdk import Connection
@@ -23,6 +24,21 @@ class ObjectStorageHookTests(unittest.TestCase):
         self.addCleanup(lookup.stop)
         lookup.start()
         return ObjectStorageHook("test_storage")
+
+    def test_simple_file_id_uses_connection_bucket_and_round_trips(self):
+        objects = {}
+        hook = self.hook(self.connection(bucket_name="workflow-artifacts"))
+        with TemporaryDirectory() as directory:
+            source = Path(directory) / "source"
+            source.write_bytes(b"handoff")
+            with patch.object(hook, "get_conn") as factory:
+                factory.return_value.upload_fileobj.side_effect = lambda f, b, k: objects.update({(b, k): f.read()})
+                factory.return_value.download_fileobj.side_effect = lambda b, k, f: f.write(objects[b, k])
+                file_id = hook.store_file(source)
+                self.assertIsInstance(file_id, str)
+                with hook.open_file(file_id) as downloaded:
+                    self.assertEqual(downloaded.read_bytes(), b"handoff")
+                self.assertFalse(downloaded.exists())
 
     def test_requires_explicit_connection_and_no_ambient_fallback(self):
         with self.assertRaises(ValueError):
