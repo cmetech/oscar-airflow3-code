@@ -170,3 +170,13 @@ USER_AUDIT_MAINTENANCE_OPTIMIZATION = False  # OPTIMIZE rebuilds the table and n
 #   CREATE INDEX idx_tm_created_at ON TM_History(created_at);
 #   CREATE INDEX idx_ntf_created_at ON NTF_Notifications_Audit(created_at);
 #   CREATE INDEX idx_tkt_created_at ON TKT_Ticketing_Audit(created_at);
+
+
+# DB-only retention families ported from 2026-10-08.
+# LIVE deletes FK children before their parent in bounded batches; dry runs count only.
+# Worklogs - TM_WorkLog + TM_WorkLogEntries + TM_WorkLogMetadata. CLOSED worklogs only.
+ENABLE_WORKLOG_CLEANUP = True
+WORKLOG_DAYS_TO_KEEP = 30
+WORKLOG_BATCH_SIZE = 500
+WORKLOG_MAX_ITERATIONS = 200
+WORKLOG_MAINTENANCE_OPTIMIZATION = False  # Follow the bounded daily-delete default.

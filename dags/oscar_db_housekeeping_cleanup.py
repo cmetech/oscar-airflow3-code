@@ -24,6 +24,7 @@ POLICY_DEFAULTS = {
     'ticketing_audit': ('ENABLE_TICKETING_AUDIT_CLEANUP', 'TICKETING_AUDIT_DAYS_TO_KEEP'),
     'user_audit': ('ENABLE_USER_AUDIT_CLEANUP', 'USER_AUDIT_DAYS_TO_KEEP'),
     'alert_audit': ('ENABLE_ALERT_AUDIT_CLEANUP', 'ALERT_AUDIT_DAYS_TO_KEEP'),
+    'worklog': ('ENABLE_WORKLOG_CLEANUP', 'WORKLOG_DAYS_TO_KEEP'),
 }
 
 
@@ -99,6 +100,7 @@ def _cleanup_success(context):
         'clean_ticketing_audit_history': ('ticketing_audit', 'ticketing_audit_cleanup_result'),
         'clean_user_audit_history': ('user_audit', 'user_audit_cleanup_result'),
         'clean_alert_audit': ('alert_audit', 'alert_audit_cleanup_result'),
+        'clean_worklogs': ('worklog', 'worklog_cleanup_result'),
     }
     if task_id not in keys:
         return
@@ -118,14 +120,18 @@ def _cleanup_success(context):
     stats.gauge(f'oscar_housekeeping.last_success_epoch.{family}', int(datetime.now(timezone.utc).timestamp()))
     if 'eligible_backlog' in result:
         stats.gauge(f'oscar_housekeeping.eligible_backlog.{family}', int(result['eligible_backlog']))
-    stats.gauge(f'oscar_housekeeping.duration_seconds.{family}', float(context['ti'].duration or 0))
+    started = getattr(context['ti'], 'start_date', None)  # Airflow 3 runtime TI has no .duration
+    if started:
+        stats.gauge(f'oscar_housekeeping.duration_seconds.{family}',
+                    (datetime.now(timezone.utc) - started).total_seconds())
 
 
 def _cleanup_failure(context):
     family = {'clean_task_history': 'task_history', 'clean_alert_history_records': 'alert_history',
               'clean_notification_audit_history': 'notification_audit',
               'clean_ticketing_audit_history': 'ticketing_audit',
-              'clean_user_audit_history': 'user_audit', 'clean_alert_audit': 'alert_audit'}.get(
+              'clean_user_audit_history': 'user_audit', 'clean_alert_audit': 'alert_audit',
+              'clean_worklogs': 'worklog'}.get(
                   context['task_instance'].task_id)
     if family in POLICY_DEFAULTS:
         stats.incr(f'oscar_housekeeping.runs_failure.{family}')
@@ -353,6 +359,10 @@ def build_task_report(task_name: str, cleanup_type: str, result: dict) -> dict:
         if result.get("optimization_completed") is not None:
             report["optimization_completed"] = result["optimization_completed"]
 
+    # Preserve per-table counts and rollout skips for the added retention families.
+    if "tables" in result:
+        report["tables"] = result["tables"]
+
     # Common fields
     if result.get("execution_time_seconds") is not None:
         report["execution_time_seconds"] = result["execution_time_seconds"]
@@ -375,6 +385,7 @@ TASK_REPORT_REGISTRY = [
     ("notification_audit_cleanup_result", "clean_notification_audit_history", "Notification Audit (NTF_Notifications_Audit)", "db"),
     ("ticketing_audit_cleanup_result", "clean_ticketing_audit_history", "Ticketing Audit (TKT_Ticketing_Audit)", "db"),
     ("user_audit_cleanup_result", "clean_user_audit_history", "User Audit (UA_User_Audit)", "db"),
+    ("worklog_cleanup_result", "clean_worklogs", "Worklogs (TM_WorkLog + children)", "db"),
 ]
 
 
@@ -635,9 +646,8 @@ def clean_task_history(**context):
             select_ids_query = """
             SELECT th.id
             FROM TM_History th
-            WHERE th.created_at < %s
-              AND th.state IN ('SUCCESS','FAILURE','REVOKED','EXPIRED')
-            ORDER BY th.created_at, th.id
+            WHERE th.state IN ('SUCCESS','FAILURE','REVOKED','EXPIRED')
+              AND th.created_at < %s
             LIMIT %s
             FOR UPDATE SKIP LOCKED
             """
@@ -2245,6 +2255,227 @@ def clean_alert_audit(**context):
         db.close()
 
 
+# DB-only retention ported from the 2026-10-08 implementation.
+# Missing tables skip; live batches delete FK children and parent in one transaction.
+def _table_exists(cursor, table_name: str) -> bool:
+    cursor.execute(
+        "SELECT COUNT(*) FROM information_schema.tables "
+        "WHERE table_schema = DATABASE() AND table_name = %s", (table_name,))
+    return bool(cursor.fetchone()[0])
+
+def _table_size_gb(cursor, table_name: str) -> float:
+    cursor.execute(
+        "SELECT ROUND((data_length + index_length) / 1024 / 1024 / 1024, 2) "
+        "FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = %s",
+        (table_name,))
+    row = cursor.fetchone()
+    return float(row[0] or 0) if row else 0.0
+
+def _retain_table(cursor, db, spec: dict, days_to_keep: int, batch_size: int, max_iterations: int,
+                  dry_run: bool, optimize: bool, check_timeout, wl) -> dict:
+    """Apply retention to one parent table (+ FK children). Returns a per-table stats dict."""
+    parent, pk, ts_col = spec["table"], spec["pk"], spec["ts_column"]
+    extra_where = spec.get("extra_where", "")
+    stats = {"table": parent, "deleted": 0, "children_deleted": 0, "iterations": 0}
+
+    if not _table_exists(cursor, parent):
+        wl(f"{parent}: table not present on this install - skipped", "INFO")
+        stats["skipped"] = "table not present"
+        return stats
+
+    children = [c for c in spec.get("children", []) if _table_exists(cursor, c[0])]
+    stats["children_skipped"] = [c for c, _ in spec.get("children", []) if c not in {name for name, _ in children}]
+    cutoff_str = (datetime.now(timezone.utc) - timedelta(days=days_to_keep)).strftime('%Y-%m-%d %H:%M:%S')
+    where = f"{ts_col} < %s" + (f" AND ({extra_where})" if extra_where else "")
+    stats["cutoff"] = cutoff_str
+
+    count_limit = batch_size * max_iterations + 1
+    eligible = bounded_eligible_count(cursor, parent, where, (cutoff_str,), count_limit)
+    stats["eligible_backlog"] = eligible
+    stats["backlog_count_capped"] = eligible == count_limit
+    if dry_run:
+        stats["would_delete"] = eligible
+        stats["child_counts_capped"] = {}
+        for child, fk in children:
+            stats[f"would_delete_{child}"] = bounded_eligible_count(
+                cursor, child, f"{fk} IN (SELECT {pk} FROM {parent} WHERE {where})",
+                (cutoff_str,), count_limit)
+            stats["child_counts_capped"][child] = stats[f"would_delete_{child}"] == count_limit
+        wl(f"[DRY RUN] {parent}: would delete {stats['would_delete']:,} rows older than {cutoff_str}"
+           + (" (capped)" if stats["backlog_count_capped"] else "")
+           + "".join(f", {c}: {stats[f'would_delete_{c}']:,}"
+                     + (" (capped)" if stats["child_counts_capped"][c] else "") for c, _ in children), "INFO")
+        return stats
+
+    original_size_gb = _table_size_gb(cursor, parent) if optimize else 0.0
+    child_batch_size = int(spec.get("child_batch_size", 5000))
+    for _ in range(max_iterations):
+        if check_timeout():
+            wl(f"{parent}: stopped on timeout - backlog continues next run", "WARNING")
+            stats["timeout_reached"] = True
+            break
+
+        cursor.execute(f"SELECT {pk} FROM {parent} WHERE {where} LIMIT %s FOR UPDATE", (cutoff_str, batch_size))
+        ids = [row[0] for row in cursor.fetchall()]
+        if not ids:
+            break
+        stats["iterations"] += 1
+        placeholders = ','.join(['%s'] * len(ids))
+        still_eligible = f"SELECT {pk} FROM {parent} WHERE {pk} IN ({placeholders}) AND {where}"
+        # FK children first, in committed chunks: one huge parent (e.g. a worklog with millions of
+        # entries) must make progress instead of timing out and rolling back every run. Each chunk
+        # re-checks that its parent is still eligible.
+        timed_out = False
+        for child, fk in children:
+            while True:
+                if check_timeout():
+                    timed_out = True
+                    break
+                # The outer indexed fk IN (ids) bounds the scan (LIMIT disables MySQL's semijoin);
+                # the subquery keeps the parent eligibility re-check.
+                cursor.execute(f"DELETE FROM {child} WHERE {fk} IN ({placeholders}) "
+                               f"AND {fk} IN (SELECT {pk} FROM ({still_eligible}) eligible) LIMIT %s",
+                               (*ids, *ids, cutoff_str, child_batch_size))
+                removed = cursor.rowcount
+                db.commit()
+                stats["children_deleted"] += removed
+                if removed < child_batch_size:
+                    break
+            if timed_out:
+                break
+        if timed_out:
+            wl(f"{parent}: stopped on timeout while deleting child rows - continues next run", "WARNING")
+            stats["timeout_reached"] = True
+            break
+        # Parents last, re-locked and re-checked; children that arrived meanwhile go in the same transaction.
+        cursor.execute(still_eligible + " FOR UPDATE", (*ids, cutoff_str))
+        ids = [row[0] for row in cursor.fetchall()]
+        if ids:
+            placeholders = ','.join(['%s'] * len(ids))
+            for child, fk in children:
+                cursor.execute(f"DELETE FROM {child} WHERE {fk} IN ({placeholders})", ids)
+                stats["children_deleted"] += cursor.rowcount
+            cursor.execute(f"DELETE FROM {parent} WHERE {pk} IN ({placeholders})", ids)
+        deleted = cursor.rowcount if ids else 0
+        db.commit()
+        stats["deleted"] += deleted
+        if deleted == 0:
+            break
+
+    else:
+        wl(f"{parent}: stopped at max_iterations ({max_iterations}) - backlog continues next run", "WARNING")
+        stats["limit_reached"] = True
+    stats["eligible_backlog"] = max(0, eligible - stats["deleted"])
+
+    wl(f"{parent}: deleted {stats['deleted']:,} rows (+{stats['children_deleted']:,} child rows) "
+       f"older than {cutoff_str}", "INFO")
+
+    if optimize and stats["deleted"] > 0:
+        try:
+            for tbl in [parent] + [c for c, _ in children]:
+                cursor.execute(f"OPTIMIZE TABLE {tbl}")
+                cursor.fetchall()  # Must consume OPTIMIZE result set
+                cursor.execute(f"ANALYZE TABLE {tbl}")
+                cursor.fetchall()
+            db.commit()
+            new_size_gb = _table_size_gb(cursor, parent)
+            stats["original_size_gb"] = original_size_gb
+            stats["new_size_gb"] = new_size_gb
+            stats["space_freed_gb"] = round(max(original_size_gb - new_size_gb, 0), 2)
+            stats["optimization_completed"] = True
+        except Exception as e:
+            wl(f"{parent}: OPTIMIZE TABLE failed (non-fatal): {e}", "ERROR")
+            stats["optimization_completed"] = False
+            stats["optimization_error"] = str(e)
+    return stats
+
+def run_table_retention(context, task_label: str, family: str, prefix: str, xcom_key: str,
+                        specs: list):
+    """Retain DB tables using this run's policy snapshot and bounded FK-first batches."""
+    if not housekeeping_config.ENABLE_DATABASE_CLEANUP:
+        return "Database cleanup disabled by master flag"
+    policy = policy_for(context, family)
+    if not policy['enabled']:
+        return f"{task_label} cleanup disabled by policy"
+
+    days_to_keep = policy['retention_days']
+    batch_size = int(getattr(housekeeping_config, f'{prefix}_BATCH_SIZE', 1000))
+    max_iterations = int(getattr(housekeeping_config, f'{prefix}_MAX_ITERATIONS', 100))
+    optimize = bool(getattr(housekeeping_config, f'{prefix}_MAINTENANCE_OPTIMIZATION', False))
+    dry_run = housekeeping_config.DRY_RUN_MODE
+    if batch_size < 1 or max_iterations < 1:
+        raise ValueError(f"{family}: batch size and max iterations must be positive")
+
+    worklog_hook = None
+    try:
+        worklog_id = context['ti'].xcom_pull(task_ids='create_worklog', key='worklog_id')
+        if worklog_id:
+            worklog_hook = WorkLogHook()
+            worklog_hook.set_worklog_id(worklog_id)
+    except Exception:
+        worklog_hook = None
+
+    def wl(message: str, level: str = "INFO") -> None:
+        wl_write(worklog_hook, message, level)
+
+    db = _connect_oscar_db(os.getenv('OSCAR_DB_CONNECTION_ID', 'oscar_db'))
+    started = datetime.now(timezone.utc)
+    cursor = None
+    try:
+        cursor = db.cursor()
+        check_timeout = create_timeout_checker(task_label, housekeeping_config.TASK_TIMEOUT_MINUTES)
+        mode = "DRY RUN (count only)" if dry_run else "LIVE MODE (will delete)"
+        wl(f"Starting {task_label} cleanup [{mode}]: days_to_keep={days_to_keep}, "
+           f"batch_size={batch_size}, max_iterations={max_iterations}")
+        per_table = [_retain_table(cursor, db, spec, days_to_keep, batch_size, max_iterations,
+                                   dry_run, optimize, check_timeout, wl) for spec in specs]
+        if all(table.get('skipped') for table in per_table):
+            result = f"{task_label} cleanup skipped: tables not present on this install"
+        else:
+            deleted = sum(table['deleted'] + table['children_deleted'] for table in per_table)
+            would = sum(table.get('would_delete', 0) for table in per_table)
+            result = {
+                'dry_run': dry_run, 'days_to_keep': days_to_keep, 'batch_size': batch_size,
+                'max_iterations': max_iterations, 'tables': per_table, 'rows_deleted': deleted,
+                'eligible_backlog': sum(table.get('eligible_backlog', 0) for table in per_table),
+                'backlog_count_capped': any(table.get('backlog_count_capped', False) for table in per_table),
+                'execution_time_seconds': (datetime.now(timezone.utc) - started).total_seconds(),
+                'summary': (f"[DRY RUN] Would delete {would:,} {task_label} rows" if dry_run
+                            else f"Deleted {deleted:,} {task_label} rows"),
+            }
+            if dry_run:
+                result['rows_to_delete'] = would
+                result['dry_run_counts_capped'] = any(
+                    table.get('backlog_count_capped', False) or any(table.get('child_counts_capped', {}).values())
+                    for table in per_table)
+            if optimize and not dry_run:
+                result['space_freed_gb'] = round(sum(table.get('space_freed_gb', 0) for table in per_table), 2)
+                result['optimization_completed'] = all(table.get('optimization_completed', True) for table in per_table)
+        logger.info('%s cleanup: %s', task_label, result)
+        wl(json.dumps({'cleanup_stats': result}, default=str))
+        context['ti'].xcom_push(key=xcom_key, value=result)
+        return result
+    except Exception as exc:
+        db.rollback()
+        wl(f"Error during {task_label} cleanup: {exc}", "ERROR")
+        raise
+    finally:
+        if cursor is not None:
+            cursor.close()
+        db.close()
+
+@task
+def clean_worklogs(**context):
+    """TM_WorkLog (+ TM_WorkLogEntries, TM_WorkLogMetadata; FK NO ACTION -> children first).
+    Only CLOSED worklogs are deleted; OPEN worklogs are never touched."""
+    return run_table_retention(
+        context, "Worklogs", "worklog", "WORKLOG", "worklog_cleanup_result",
+        [{"table": "TM_WorkLog", "pk": "id", "ts_column": "created_at",
+          "extra_where": "status = 'CLOSED'",
+          "children": [("TM_WorkLogEntries", "worklog_id"), ("TM_WorkLogMetadata", "worklog_id")]}])
+
+
+
 @task
 def close_worklog(**context):
     """Close the worklog created earlier, persist cleanup reports as metadata, and add a final entry."""
@@ -2264,14 +2495,26 @@ def close_worklog(**context):
     tasks_skipped = 0
     tasks_failed = 0
 
+    # Airflow 3 task-SDK DagRun has no get_task_instance(); read states through the task instance.
+    run_id = context['dag_run'].run_id
+    try:
+        states = ti.get_task_states(dag_id=ti.dag_id, task_ids=[task_id for _, task_id, _, _ in TASK_REPORT_REGISTRY],
+                                    run_ids=[run_id]).get(run_id, {})
+    except Exception as exc:
+        logger.warning(f"Could not read task states: {exc}")
+        states = None
+
     for xcom_key, airflow_task_id, task_name, cleanup_type in TASK_REPORT_REGISTRY:
         try:
-            instance = context['dag_run'].get_task_instance(airflow_task_id)
-            task_state = getattr(instance, 'state', None)
+            task_state = states.get(airflow_task_id) if states is not None else None
             result = ti.xcom_pull(task_ids=airflow_task_id, key=xcom_key)
             if task_state in ('failed', 'upstream_failed'):
                 report = {'task': task_name, 'type': cleanup_type, 'status': 'error',
                           'reason': f'Airflow task state: {task_state}'}
+            elif task_state is None and result is None:
+                # No known state and no result could be a failure; never report it as skipped.
+                report = {'task': task_name, 'type': cleanup_type, 'status': 'error',
+                          'reason': 'Airflow task state unavailable and no result'}
             else:
                 report = build_task_report(task_name, cleanup_type, result)
         except Exception as e:
@@ -2345,9 +2588,13 @@ def enforce_housekeeping_result(**context):
     """The report can complete while a cleanup failed; keep the DAG red."""
     checked = [task_id for _, task_id, _, _ in TASK_REPORT_REGISTRY]
     checked.extend(('load_housekeeping_policy', 'close_worklog'))
-    failed = [task_id for task_id in checked
-              if getattr(context['dag_run'].get_task_instance(task_id), 'state', None)
-              in ('failed', 'upstream_failed')]
+    # Airflow 3 task-SDK DagRun has no get_task_instance(); read states through the task instance.
+    # A missing or unexpected state fails closed: only success/skipped count as done.
+    ti = context['ti']
+    run_id = context['dag_run'].run_id
+    states = ti.get_task_states(dag_id=ti.dag_id, task_ids=checked, run_ids=[run_id]).get(run_id, {})
+    failed = [f"{task_id}={states.get(task_id)}" for task_id in checked
+              if states.get(task_id) not in ('success', 'skipped')]
     if failed:
         raise RuntimeError('Housekeeping failed: ' + ', '.join(failed))
 
@@ -2372,6 +2619,7 @@ The file is read fresh on every run. Trigger the DAG from this page or the workf
 
 Retention defaults are task history 7 days, alert history 30 days, notification audit
 30 days, ticketing audit 40 days, user audit 7 days, and alert audit 90 days.
+Worklogs retain CLOSED records for 30 days.
 Table swap modes are blocked because they can lose concurrent writes and bypass triggers.
 **If a run fails:** open the failed task's log and the worklog report.
 """
@@ -2448,6 +2696,13 @@ with DAG(
         retry_delay=timedelta(minutes=housekeeping_config.RETRY_DELAY_MINUTES),
     )()
 
+    clean_worklogs_task = clean_worklogs.override(
+        on_success_callback=_cleanup_success,
+        on_failure_callback=_cleanup_failure,
+        retries=housekeeping_config.MAX_RETRIES,
+        retry_delay=timedelta(minutes=housekeeping_config.RETRY_DELAY_MINUTES),
+    )()
+
     close_worklog_task = close_worklog()
     close_worklog_task.trigger_rule = TriggerRule.ALL_DONE
 
@@ -2463,4 +2718,5 @@ with DAG(
         clean_ticketing_audit_history_task,
         clean_user_audit_history_task,
         clean_alert_audit_task,
+        clean_worklogs_task,
     ] >> join_cleanup >> close_worklog_task >> enforce_housekeeping_result()
